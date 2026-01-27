@@ -1,0 +1,183 @@
+// Supported AI providers
+type AIProvider = "groq" | "huggingface" | "openai" | "deepseek" | "together";
+
+const API_CONFIGS = {
+  groq: {
+    url: "https://api.groq.com/openai/v1/chat/completions",
+    model: "llama-3.3-70b-versatile",
+    envKey: "VITE_GROQ_API_KEY",
+    useProxy: false,
+  },
+  huggingface: {
+    url: "/api/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions",
+    model: "mistralai/Mistral-7B-Instruct-v0.3",
+    envKey: "VITE_HUGGINGFACE_API_KEY",
+    useProxy: true,
+  },
+  openai: {
+    url: "https://api.openai.com/v1/chat/completions",
+    model: "gpt-4o-mini",
+    envKey: "VITE_OPENAI_API_KEY",
+    useProxy: false,
+  },
+  deepseek: {
+    url: "https://api.deepseek.com/v1/chat/completions",
+    model: "deepseek-chat",
+    envKey: "VITE_DEEPSEEK_API_KEY",
+    useProxy: false,
+  },
+  together: {
+    url: "https://api.together.xyz/v1/chat/completions",
+    model: "mistralai/Mixtral-8x7B-Instruct-v0.1",
+    envKey: "VITE_TOGETHER_API_KEY",
+    useProxy: false,
+  },
+};
+
+export interface TweetGenerationRequest {
+  topic: string;
+  style: "viral" | "professional" | "casual" | "thread";
+  includeHashtags: boolean;
+  includeEmojis: boolean;
+}
+
+export interface TweetGenerationResponse {
+  tweet: string;
+  error?: string;
+}
+
+const stylePrompts = {
+  viral: "viral and engaging, optimized for retweets and likes",
+  professional:
+    "professional and informative, suitable for business networking",
+  casual: "casual and friendly, like talking to a friend",
+  thread:
+    "formatted as a Twitter thread with numbered parts, diving deep into the topic",
+};
+
+// Auto-detect which API key is available
+function detectProvider(): AIProvider {
+  const providers: AIProvider[] = [
+    "groq",
+    "deepseek",
+    "openai",
+    "together",
+    "huggingface",
+  ];
+
+  for (const provider of providers) {
+    const envKey = API_CONFIGS[provider].envKey;
+    if (import.meta.env[envKey]) {
+      return provider;
+    }
+  }
+
+  return "groq"; // Default to Groq (free, unlimited)
+}
+
+export async function generateTweet(
+  request: TweetGenerationRequest,
+): Promise<TweetGenerationResponse> {
+  const provider = detectProvider();
+  const config = API_CONFIGS[provider];
+
+  // Check for API key
+  const envKeys = Object.values(API_CONFIGS).map((c) => c.envKey);
+  const hasAnyKey = envKeys.some((key) => import.meta.env[key]);
+
+  if (!hasAnyKey) {
+    return {
+      tweet: "",
+      error: `No API key found. Please add one of these to your .env file:
+
+- VITE_GROQ_API_KEY (Recommended - Free, unlimited, fast)
+- VITE_DEEPSEEK_API_KEY (Free tier available)
+- VITE_OPENAI_API_KEY ($5 free credit)
+- VITE_TOGETHER_API_KEY ($25 free credit)
+- VITE_HUGGINGFACE_API_KEY (30K free requests/month)
+
+Get a free Groq key: https://console.groq.com/keys`,
+    };
+  }
+
+  const { topic, style, includeHashtags, includeEmojis } = request;
+
+  const prompt = `Generate a ${style} tweet about: "${topic}"
+
+Requirements:
+- Under 280 characters total
+- ${includeHashtags ? "Include relevant hashtags at the end" : "No hashtags"}
+- ${includeEmojis ? "Use appropriate emojis to make it engaging" : "No emojis"}
+- Make it ${stylePrompts[style]}
+- For threads: format as numbered tweets (1/, 2/, etc.) with each under 280 characters
+
+Output ONLY the tweet text, no explanations or extra commentary.`;
+
+  try {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    // Add authorization based on provider
+    const envKey = config.envKey;
+    const apiKey = import.meta.env[envKey];
+
+    if (provider === "huggingface") {
+      headers["Authorization"] = `Bearer ${apiKey}`;
+    } else {
+      headers["Authorization"] = `Bearer ${apiKey}`;
+    }
+
+    const response = await fetch(config.url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: config.model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.",
+          },
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 1000,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      return {
+        tweet: "",
+        error:
+          error.error?.message ||
+          error.message ||
+          `Failed to generate tweet using ${provider}`,
+      };
+    }
+
+    const data = await response.json();
+    const tweet = data.choices?.[0]?.message?.content || "";
+
+    return { tweet: tweet.trim() };
+  } catch (error) {
+    return {
+      tweet: "",
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to generate tweet. Please try again.",
+    };
+  }
+}
+
+// Helper function to check which provider is being used
+export function getCurrentProvider(): string {
+  const provider = detectProvider();
+  const config = API_CONFIGS[provider];
+  return `${provider} (${config.model})`;
+}
