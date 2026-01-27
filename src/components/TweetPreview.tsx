@@ -1,5 +1,5 @@
 import { Card } from "./ui/card";
-import { User, verifiedBadge } from "lucide-react";
+import { User, BadgeCheck } from "lucide-react";
 
 interface TweetPreviewProps {
   content: string;
@@ -87,7 +87,7 @@ export function TweetPreview({
                     <span className="font-bold text-gray-900 dark:text-white text-[15px]">
                       {displayName}
                     </span>
-                    <verifiedBadge className="w-4 h-4 text-blue-500 fill-blue-500" />
+                    <BadgeCheck className="w-4 h-4 text-blue-500 fill-blue-500" />
                     <span className="text-gray-500 dark:text-gray-400 text-[15px]">
                       @{username}
                     </span>
@@ -132,7 +132,7 @@ export function TweetPreview({
                 <span className="font-bold text-gray-900 dark:text-white text-[15px]">
                   {displayName}
                 </span>
-                <verifiedBadge className="w-4 h-4 text-blue-500 fill-blue-500" />
+                <BadgeCheck className="w-4 h-4 text-blue-500 fill-blue-500" />
                 <span className="text-gray-500 dark:text-gray-400 text-[15px]">
                   @{username}
                 </span>

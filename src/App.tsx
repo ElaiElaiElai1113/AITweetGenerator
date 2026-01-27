@@ -1,10 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { Label } from "./components/ui/label";
 import { Textarea } from "./components/ui/textarea";
 import { Select } from "./components/ui/select";
-import { generateTweet, getCurrentProvider } from "./lib/api";
+import { generateTweet, generateBatchTweets, getCurrentProvider } from "./lib/api";
 import {
   saveToHistory,
   toggleFavorite,
@@ -13,6 +13,7 @@ import {
 import { useKeyboardShortcuts } from "./lib/useKeyboardShortcuts";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { TweetPreview } from "./components/TweetPreview";
+import { BatchResults } from "./components/BatchResults";
 import {
   Copy,
   RefreshCw,
@@ -25,6 +26,7 @@ import {
   Eye,
   EyeOff,
   Star,
+  Layers,
 } from "lucide-react";
 import { useTheme } from "./components/theme-provider";
 
@@ -39,10 +41,17 @@ function App() {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
 
-  // New state for features
+  // Feature states
   const [showHistory, setShowHistory] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
   const [currentTweetId, setCurrentTweetId] = useState<string>("");
+
+  // Batch mode states
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchCount, setBatchCount] = useState(3);
+  const [batchTweets, setBatchTweets] = useState<string[]>([]);
+  const [selectedBatchIndex, setSelectedBatchIndex] = useState<number | null>(null);
+  const [copiedBatchIndex, setCopiedBatchIndex] = useState<number | null>(null);
 
   // Keyboard shortcuts
   useKeyboardShortcuts([
@@ -56,6 +65,13 @@ function App() {
         }
       },
       description: "Generate Tweet",
+    },
+    {
+      key: "b",
+      ctrlKey: true,
+      metaKey: true,
+      action: () => setBatchMode(!batchMode),
+      description: "Toggle Batch Mode",
     },
     {
       key: "c",
@@ -73,7 +89,7 @@ function App() {
       ctrlKey: true,
       metaKey: true,
       action: () => {
-        if (generatedTweet && !loading) {
+        if (!loading && (topic.trim() || generatedTweet)) {
           handleGenerate();
         }
       },
@@ -97,8 +113,12 @@ function App() {
       key: "Escape",
       action: () => {
         if (showHistory) setShowHistory(false);
+        if (batchTweets.length > 0) {
+          setBatchTweets([]);
+          setSelectedBatchIndex(null);
+        }
       },
-      description: "Close Dialog",
+      description: "Close Dialog / Clear Batch",
     },
   ]);
 
@@ -111,30 +131,67 @@ function App() {
     setLoading(true);
     setError("");
     setGeneratedTweet("");
+    setBatchTweets([]);
+    setSelectedBatchIndex(null);
 
     try {
-      const response = await generateTweet({
-        topic,
-        style,
-        includeHashtags,
-        includeEmojis,
-      });
+      if (batchMode) {
+        // Batch generation
+        const response = await generateBatchTweets(
+          {
+            topic,
+            style,
+            includeHashtags,
+            includeEmojis,
+          },
+          batchCount
+        );
 
-      if (response.error) {
-        setError(response.error);
+        if (response.error) {
+          setError(response.error);
+        } else if (response.tweets.length > 0) {
+          setBatchTweets(response.tweets);
+          // Auto-select the first tweet
+          setGeneratedTweet(response.tweets[0]);
+          setSelectedBatchIndex(0);
+          // Save all tweets to history
+          response.tweets.forEach((tweet) => {
+            const newTweet: SavedTweet = {
+              id: `${Date.now()}-${Math.random()}`,
+              content: tweet,
+              topic,
+              style,
+              timestamp: Date.now(),
+              favorite: false,
+            };
+            saveToHistory(newTweet);
+          });
+        }
       } else {
-        setGeneratedTweet(response.tweet);
-        // Save to history
-        const newTweet: SavedTweet = {
-          id: Date.now().toString(),
-          content: response.tweet,
+        // Single tweet generation
+        const response = await generateTweet({
           topic,
           style,
-          timestamp: Date.now(),
-          favorite: false,
-        };
-        saveToHistory(newTweet);
-        setCurrentTweetId(newTweet.id);
+          includeHashtags,
+          includeEmojis,
+        });
+
+        if (response.error) {
+          setError(response.error);
+        } else {
+          setGeneratedTweet(response.tweet);
+          // Save to history
+          const newTweet: SavedTweet = {
+            id: Date.now().toString(),
+            content: response.tweet,
+            topic,
+            style,
+            timestamp: Date.now(),
+            favorite: false,
+          };
+          saveToHistory(newTweet);
+          setCurrentTweetId(newTweet.id);
+        }
       }
     } catch (err) {
       setError("Failed to generate tweet. Please try again.");
@@ -143,15 +200,28 @@ function App() {
     }
   };
 
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(generatedTweet);
+  const handleCopy = async (tweet?: string) => {
+    const textToCopy = tweet || generatedTweet;
+    await navigator.clipboard.writeText(textToCopy);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleTweet = () => {
-    const url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(generatedTweet)}`;
+  const handleBatchCopy = async (tweet: string, index: number) => {
+    await navigator.clipboard.writeText(tweet);
+    setCopiedBatchIndex(index);
+    setTimeout(() => setCopiedBatchIndex(null), 2000);
+  };
+
+  const handleTweet = (tweet?: string) => {
+    const textToTweet = tweet || generatedTweet;
+    const url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(textToTweet)}`;
     window.open(url, "_blank");
+  };
+
+  const handleBatchSelect = (tweet: string, index: number) => {
+    setGeneratedTweet(tweet);
+    setSelectedBatchIndex(index);
   };
 
   const handleFavorite = () => {
@@ -170,8 +240,21 @@ function App() {
           <div className="flex items-center gap-2">
             <Sparkles className="h-6 w-6 text-primary" />
             <h1 className="text-xl font-bold">AI Tweet Generator</h1>
+            {batchMode && (
+              <span className="text-xs bg-primary text-primary-foreground px-2 py-0.5 rounded-full">
+                Batch Mode
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant={batchMode ? "default" : "ghost"}
+              size="icon"
+              onClick={() => setBatchMode(!batchMode)}
+              title="Toggle Batch Mode (Ctrl+B)"
+            >
+              <Layers className="h-5 w-5" />
+            </Button>
             <Button
               variant="ghost"
               size="icon"
@@ -200,24 +283,26 @@ function App() {
       </header>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-12 max-w-5xl">
+      <main className="container mx-auto px-4 py-12 max-w-6xl">
         <div className="grid lg:grid-cols-2 gap-8">
           {/* Left Column - Input */}
           <div className="space-y-8">
             {/* Hero Section */}
             <div className="text-center space-y-4">
               <h2 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-primary via-purple-500 to-pink-500 bg-clip-text text-transparent">
-                Create Viral Tweets with AI
+                {batchMode ? "Generate Multiple Tweets" : "Create Viral Tweets with AI"}
               </h2>
               <p className="text-muted-foreground text-lg">
-                Generate engaging tweets in seconds using multiple AI providers
+                {batchMode
+                  ? `Generate ${batchCount} variations and pick the best one`
+                  : "Generate engaging tweets in seconds using multiple AI providers"}
               </p>
             </div>
 
             {/* Input Card */}
             <Card className="border-primary/20 shadow-lg">
               <CardHeader>
-                <CardTitle>Generate Your Tweet</CardTitle>
+                <CardTitle>Generate Your Tweet{batchMode ? "s" : ""}</CardTitle>
                 <CardDescription>
                   Enter a topic and customize your tweet style
                 </CardDescription>
@@ -252,6 +337,23 @@ function App() {
                     <option value="thread">🧵 Twitter Thread</option>
                   </Select>
                 </div>
+
+                {/* Batch Mode Options */}
+                {batchMode && (
+                  <div className="space-y-2">
+                    <Label htmlFor="batchCount">Number of Variations</Label>
+                    <Select
+                      id="batchCount"
+                      value={batchCount.toString()}
+                      onChange={(e) => setBatchCount(parseInt(e.target.value))}
+                    >
+                      <option value="2">2 variations</option>
+                      <option value="3">3 variations</option>
+                      <option value="4">4 variations</option>
+                      <option value="5">5 variations</option>
+                    </Select>
+                  </div>
+                )}
 
                 {/* Options */}
                 <div className="flex gap-6">
@@ -290,7 +392,7 @@ function App() {
                   ) : (
                     <>
                       <Sparkles className="mr-2 h-5 w-5" />
-                      Generate Tweet
+                      Generate {batchMode ? `${batchCount} Tweets` : "Tweet"}
                     </>
                   )}
                 </Button>
@@ -310,11 +412,11 @@ function App() {
                 <h3 className="font-semibold text-sm mb-3">Keyboard Shortcuts</h3>
                 <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+Enter</kbd> Generate</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+B</kbd> Batch mode</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+C</kbd> Copy</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+R</kbd> Regenerate</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+H</kbd> History</div>
-                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+P</kbd> Toggle Preview</div>
-                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Esc</kbd> Close dialog</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+P</kbd> Preview</div>
                 </div>
               </CardContent>
             </Card>
@@ -322,91 +424,105 @@ function App() {
 
           {/* Right Column - Preview & Result */}
           <div className="space-y-8">
-            {/* Tweet Preview */}
-            {showPreview && generatedTweet && (
-              <div className="space-y-4">
-                <h3 className="text-lg font-semibold">Live Preview</h3>
-                <TweetPreview content={generatedTweet} />
-              </div>
-            )}
-
-            {/* Result Card */}
-            {generatedTweet && (
-              <Card className="border-primary/20 shadow-lg">
-                <CardHeader>
-                  <CardTitle>Your Generated Tweet</CardTitle>
-                  <CardDescription>
-                    Copy it, tweet it directly, or regenerate with different settings
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="p-6 bg-muted rounded-lg border">
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                      {generatedTweet}
-                    </p>
-                    <div className="mt-4 text-xs text-muted-foreground flex justify-between">
-                      <span>{generatedTweet.length} characters</span>
-                      <span
-                        className={
-                          generatedTweet.length > 280
-                            ? "text-red-500"
-                            : generatedTweet.length > 260
-                            ? "text-yellow-500"
-                            : "text-green-500"
-                        }
-                      >
-                        {generatedTweet.length > 280
-                          ? `-${generatedTweet.length - 280} over limit`
-                          : `${280 - generatedTweet.length} remaining`}
-                      </span>
-                    </div>
+            {/* Batch Results */}
+            {batchTweets.length > 0 ? (
+              <BatchResults
+                tweets={batchTweets}
+                onSelect={handleBatchSelect}
+                selectedIndex={selectedBatchIndex}
+                onCopy={handleBatchCopy}
+                onTweet={handleTweet}
+                copiedIndex={copiedBatchIndex}
+              />
+            ) : (
+              <>
+                {/* Tweet Preview */}
+                {showPreview && generatedTweet && (
+                  <div className="space-y-4">
+                    <h3 className="text-lg font-semibold">Live Preview</h3>
+                    <TweetPreview content={generatedTweet} />
                   </div>
+                )}
 
-                  {/* Action Buttons */}
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <Button
-                      onClick={handleCopy}
-                      variant="outline"
-                      className="flex-1"
-                    >
-                      {copied ? (
-                        <>
-                          <Copy className="mr-2 h-4 w-4" />
-                          Copied!
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="mr-2 h-4 w-4" />
-                          Copy
-                        </>
-                      )}
-                    </Button>
-                    <Button
-                      onClick={handleTweet}
-                      className="flex-1 bg-[#1DA1F2] hover:bg-[#1a8cd8] text-white"
-                    >
-                      <Twitter className="mr-2 h-4 w-4" />
-                      Post
-                    </Button>
-                    <Button
-                      onClick={handleGenerate}
-                      variant="outline"
-                      disabled={loading}
-                    >
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                      Regenerate
-                    </Button>
-                    <Button
-                      onClick={handleFavorite}
-                      variant="outline"
-                      size="icon"
-                      title="Save to favorites"
-                    >
-                      <Star className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+                {/* Result Card */}
+                {generatedTweet && (
+                  <Card className="border-primary/20 shadow-lg">
+                    <CardHeader>
+                      <CardTitle>Your Generated Tweet</CardTitle>
+                      <CardDescription>
+                        Copy it, tweet it directly, or regenerate with different settings
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="p-6 bg-muted rounded-lg border">
+                        <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                          {generatedTweet}
+                        </p>
+                        <div className="mt-4 text-xs text-muted-foreground flex justify-between">
+                          <span>{generatedTweet.length} characters</span>
+                          <span
+                            className={
+                              generatedTweet.length > 280
+                                ? "text-red-500"
+                                : generatedTweet.length > 260
+                                ? "text-yellow-500"
+                                : "text-green-500"
+                            }
+                          >
+                            {generatedTweet.length > 280
+                              ? `-${generatedTweet.length - 280} over limit`
+                              : `${280 - generatedTweet.length} remaining`}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <Button
+                          onClick={() => handleCopy()}
+                          variant="outline"
+                          className="flex-1"
+                        >
+                          {copied ? (
+                            <>
+                              <Copy className="mr-2 h-4 w-4" />
+                              Copied!
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="mr-2 h-4 w-4" />
+                              Copy
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          onClick={() => handleTweet()}
+                          className="flex-1 bg-[#1DA1F2] hover:bg-[#1a8cd8] text-white"
+                        >
+                          <Twitter className="mr-2 h-4 w-4" />
+                          Post
+                        </Button>
+                        <Button
+                          onClick={handleGenerate}
+                          variant="outline"
+                          disabled={loading}
+                        >
+                          <RefreshCw className="mr-2 h-4 w-4" />
+                          Regenerate
+                        </Button>
+                        <Button
+                          onClick={handleFavorite}
+                          variant="outline"
+                          size="icon"
+                          title="Save to favorites"
+                        >
+                          <Star className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </>
             )}
 
             {/* Info Card */}
@@ -418,9 +534,16 @@ function App() {
                     <span className="text-primary font-mono">{currentProvider}</span>
                   </p>
                   <p>
-                    <strong className="text-foreground">Features:</strong> Live preview,
-                    history with favorites, keyboard shortcuts, viral tweet generation,
-                    multiple styles, hashtag and emoji options, and Twitter thread support
+                    <strong className="text-foreground">Features:</strong>{" "}
+                    {batchMode ? (
+                      <>Batch generation with multiple variations</>
+                    ) : (
+                      <>
+                        Live preview, history with favorites, keyboard shortcuts,
+                        batch mode, viral tweet generation, multiple styles,
+                        hashtag and emoji options, and Twitter thread support
+                      </>
+                    )}
                   </p>
                   <p>
                     <strong className="text-foreground">Privacy:</strong> Your API
@@ -475,7 +598,8 @@ function App() {
         onClose={() => setShowHistory(false)}
         onTweetSelect={(content) => {
           setGeneratedTweet(content);
-          // Extract a topic from the content for the new tweet ID
+          setBatchTweets([]);
+          setSelectedBatchIndex(null);
           const words = content.split(" ").slice(0, 3).join(" ");
           setTopic(words);
         }}

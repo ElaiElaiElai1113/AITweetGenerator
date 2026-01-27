@@ -46,6 +46,11 @@ export interface TweetGenerationResponse {
   error?: string;
 }
 
+export interface BatchTweetResponse {
+  tweets: string[];
+  error?: string;
+}
+
 const stylePrompts = {
   viral: "viral and engaging, optimized for retweets and likes",
   professional:
@@ -180,4 +185,108 @@ export function getCurrentProvider(): string {
   const provider = detectProvider();
   const config = API_CONFIGS[provider];
   return `${provider} (${config.model})`;
+}
+
+// Generate multiple tweet variations at once
+export async function generateBatchTweets(
+  request: TweetGenerationRequest,
+  count: number = 3
+): Promise<BatchTweetResponse> {
+  const provider = detectProvider();
+  const config = API_CONFIGS[provider];
+
+  // Check for API key
+  const envKeys = Object.values(API_CONFIGS).map((c) => c.envKey);
+  const hasAnyKey = envKeys.some((key) => import.meta.env[key]);
+
+  if (!hasAnyKey) {
+    return {
+      tweets: [],
+      error: `No API key found. Please add one of these to your .env file:
+
+- VITE_GROQ_API_KEY (Recommended - Free, unlimited, fast)
+- VITE_DEEPSEEK_API_KEY (Free tier available)
+- VITE_OPENAI_API_KEY ($5 free credit)
+- VITE_TOGETHER_API_KEY ($25 free credit)
+- VITE_HUGGINGFACE_API_KEY (30K free requests/month)
+
+Get a free Groq key: https://console.groq.com/keys`,
+    };
+  }
+
+  const { topic, style, includeHashtags, includeEmojis } = request;
+
+  const prompt = `Generate ${count} different ${style} tweets about: "${topic}"
+
+Requirements:
+- Each tweet should be unique and varied in approach
+- Under 280 characters each
+- ${includeHashtags ? "Include relevant hashtags at the end" : "No hashtags"}
+- ${includeEmojis ? "Use appropriate emojis to make it engaging" : "No emojis"}
+- Make each one ${stylePrompts[style]}
+- For threads: format as numbered tweets (1/, 2/, etc.) with each under 280 characters
+
+Output format: Return each tweet on a separate line, separated by "---". No numbering, no explanations.`;
+
+  try {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    const envKey = config.envKey;
+    const apiKey = import.meta.env[envKey];
+    headers["Authorization"] = `Bearer ${apiKey}`;
+
+    const response = await fetch(config.url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: config.model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a viral Twitter content creator who specializes in creating engaging, diverse tweets that resonate with audiences.",
+          },
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        temperature: 0.9, // Higher temperature for more variety
+        max_tokens: 2000,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      return {
+        tweets: [],
+        error:
+          error.error?.message ||
+          error.message ||
+          `Failed to generate tweets using ${provider}`,
+      };
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "";
+
+    // Parse the response to extract individual tweets
+    const tweets = content
+      .split("---")
+      .map((t: string) => t.trim())
+      .filter((t: string) => t.length > 0)
+      .slice(0, count); // Ensure we only return the requested count
+
+    return { tweets };
+  } catch (error) {
+    return {
+      tweets: [],
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to generate tweets. Please try again.",
+    };
+  }
 }
