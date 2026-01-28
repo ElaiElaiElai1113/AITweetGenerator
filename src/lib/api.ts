@@ -1,6 +1,9 @@
 // Supported AI providers
 type AIProvider = "groq" | "huggingface" | "openai" | "deepseek" | "together";
 
+import type { AdvancedSettings } from "./settings";
+import { getTonePrompt, getLengthPrompt } from "./settings";
+
 const API_CONFIGS = {
   groq: {
     url: "https://api.groq.com/openai/v1/chat/completions",
@@ -39,6 +42,9 @@ export interface TweetGenerationRequest {
   style: "viral" | "professional" | "casual" | "thread";
   includeHashtags: boolean;
   includeEmojis: boolean;
+  template?: string; // Template prompt to use
+  advancedSettings?: AdvancedSettings; // Temperature, tone, length
+  useTemplate?: boolean; // Whether to use template instead of topic
 }
 
 export interface TweetGenerationResponse {
@@ -105,9 +111,29 @@ Get a free Groq key: https://console.groq.com/keys`,
     };
   }
 
-  const { topic, style, includeHashtags, includeEmojis } = request;
+  const { topic, style, includeHashtags, includeEmojis, template, advancedSettings, useTemplate } = request;
 
-  const prompt = `Generate a ${style} tweet about: "${topic}"
+  // Build the prompt based on template or topic
+  let basePrompt: string;
+  if (useTemplate && template) {
+    basePrompt = `Create a tweet following this template: "${template}"
+
+Topic: ${topic}
+Style: ${style}`;
+  } else {
+    basePrompt = `Generate a ${style} tweet about: "${topic}"`;
+  }
+
+  // Add advanced settings to prompt
+  let advancedPrompt = "";
+  if (advancedSettings) {
+    advancedPrompt = `
+Additional requirements:
+- ${getTonePrompt(advancedSettings.tone)}
+- ${getLengthPrompt(advancedSettings.length)}`;
+  }
+
+  const prompt = `${basePrompt}
 
 Requirements:
 - Under 280 characters total
@@ -115,6 +141,7 @@ Requirements:
 - ${includeEmojis ? "Use appropriate emojis to make it engaging" : "No emojis"}
 - Make it ${stylePrompts[style]}
 - For threads: format as numbered tweets (1/, 2/, etc.) with each under 280 characters
+${advancedPrompt}
 
 Output ONLY the tweet text, no explanations or extra commentary.`;
 
@@ -133,6 +160,9 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
       headers["Authorization"] = `Bearer ${apiKey}`;
     }
 
+    // Use custom temperature if provided, otherwise default
+    const temperature = advancedSettings?.temperature ?? 0.7;
+
     const response = await fetch(config.url, {
       method: "POST",
       headers,
@@ -149,7 +179,7 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
             content: prompt,
           },
         ],
-        temperature: 0.7,
+        temperature,
         max_tokens: 1000,
       }),
     });

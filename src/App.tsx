@@ -4,16 +4,23 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./com
 import { Label } from "./components/ui/label";
 import { Textarea } from "./components/ui/textarea";
 import { Select } from "./components/ui/select";
-import { generateTweet, generateBatchTweets, getCurrentProvider } from "./lib/api";
+import { generateTweet, generateBatchTweets, getCurrentProvider, type TweetGenerationRequest } from "./lib/api";
 import {
   saveToHistory,
   toggleFavorite,
   type SavedTweet,
 } from "./lib/history";
 import { useKeyboardShortcuts } from "./lib/useKeyboardShortcuts";
+import { useStreamingGeneration } from "./lib/useStreamingGeneration";
+import { analyzeImageAndGenerateTweet, type UploadedMedia } from "./lib/vision";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { TweetPreview } from "./components/TweetPreview";
 import { BatchResults } from "./components/BatchResults";
+import { TemplateSelector } from "./components/TemplateSelector";
+import { AdvancedControls } from "./components/AdvancedControls";
+import { ImageUploader } from "./components/ImageUploader";
+import { DEFAULT_SETTINGS, type AdvancedSettings } from "./lib/settings";
+import { type Template } from "./lib/templates";
 import {
   Copy,
   RefreshCw,
@@ -27,6 +34,9 @@ import {
   EyeOff,
   Star,
   Layers,
+  Zap,
+  Settings,
+  ImageIcon,
 } from "lucide-react";
 import { useTheme } from "./components/theme-provider";
 
@@ -53,6 +63,40 @@ function App() {
   const [selectedBatchIndex, setSelectedBatchIndex] = useState<number | null>(null);
   const [copiedBatchIndex, setCopiedBatchIndex] = useState<number | null>(null);
 
+  // New feature states
+  const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
+  const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(DEFAULT_SETTINGS);
+  const [useStreaming, setUseStreaming] = useState(true);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Vision feature states
+  const [uploadedMedia, setUploadedMedia] = useState<UploadedMedia | null>(null);
+  const [customContext, setCustomContext] = useState("");
+
+  // Streaming hook
+  const { isStreaming, streamedContent, error: streamError, startStreaming, stopStreaming, reset: resetStream } = useStreamingGeneration({
+    onComplete: (result) => {
+      setGeneratedTweet(result);
+      // Save to history
+      const newTweet: SavedTweet = {
+        id: Date.now().toString(),
+        content: result,
+        topic: selectedTemplate?.name || topic,
+        style,
+        timestamp: Date.now(),
+        favorite: false,
+      };
+      saveToHistory(newTweet);
+      setCurrentTweetId(newTweet.id);
+      setLoading(false);
+    },
+    onError: (err) => {
+      setError(err);
+      setLoading(false);
+    },
+  });
+
   // Keyboard shortcuts
   useKeyboardShortcuts([
     {
@@ -60,7 +104,7 @@ function App() {
       ctrlKey: true,
       metaKey: true,
       action: () => {
-        if (topic.trim() && !loading) {
+        if (topic.trim() && !loading && !isStreaming) {
           handleGenerate();
         }
       },
@@ -72,6 +116,20 @@ function App() {
       metaKey: true,
       action: () => setBatchMode(!batchMode),
       description: "Toggle Batch Mode",
+    },
+    {
+      key: "s",
+      ctrlKey: true,
+      metaKey: true,
+      action: () => setUseStreaming(!useStreaming),
+      description: "Toggle Streaming",
+    },
+    {
+      key: "t",
+      ctrlKey: true,
+      metaKey: true,
+      action: () => setShowTemplates(!showTemplates),
+      description: "Toggle Templates",
     },
     {
       key: "c",
@@ -89,7 +147,7 @@ function App() {
       ctrlKey: true,
       metaKey: true,
       action: () => {
-        if (!loading && (topic.trim() || generatedTweet)) {
+        if (!loading && !isStreaming && (topic.trim() || generatedTweet)) {
           handleGenerate();
         }
       },
@@ -117,14 +175,28 @@ function App() {
           setBatchTweets([]);
           setSelectedBatchIndex(null);
         }
+        if (isStreaming) {
+          stopStreaming();
+          setLoading(false);
+        }
       },
-      description: "Close Dialog / Clear Batch",
+      description: "Close Dialog / Clear Batch / Stop Streaming",
     },
   ]);
 
+  const buildRequest = (): TweetGenerationRequest => ({
+    topic,
+    style,
+    includeHashtags,
+    includeEmojis,
+    template: selectedTemplate?.prompt,
+    useTemplate: !!selectedTemplate,
+    advancedSettings: showAdvanced ? advancedSettings : undefined,
+  });
+
   const handleGenerate = async () => {
-    if (!topic.trim()) {
-      setError("Please enter a topic");
+    if (!topic.trim() && !selectedTemplate && !uploadedMedia) {
+      setError("Please enter a topic, select a template, or upload an image");
       return;
     }
 
@@ -133,47 +205,17 @@ function App() {
     setGeneratedTweet("");
     setBatchTweets([]);
     setSelectedBatchIndex(null);
+    resetStream();
 
     try {
-      if (batchMode) {
-        // Batch generation
-        const response = await generateBatchTweets(
-          {
-            topic,
-            style,
-            includeHashtags,
-            includeEmojis,
-          },
-          batchCount
-        );
-
-        if (response.error) {
-          setError(response.error);
-        } else if (response.tweets.length > 0) {
-          setBatchTweets(response.tweets);
-          // Auto-select the first tweet
-          setGeneratedTweet(response.tweets[0]);
-          setSelectedBatchIndex(0);
-          // Save all tweets to history
-          response.tweets.forEach((tweet) => {
-            const newTweet: SavedTweet = {
-              id: `${Date.now()}-${Math.random()}`,
-              content: tweet,
-              topic,
-              style,
-              timestamp: Date.now(),
-              favorite: false,
-            };
-            saveToHistory(newTweet);
-          });
-        }
-      } else {
-        // Single tweet generation
-        const response = await generateTweet({
-          topic,
+      // Vision-based generation when media is uploaded
+      if (uploadedMedia && uploadedMedia.base64) {
+        const response = await analyzeImageAndGenerateTweet({
+          imageBase64: uploadedMedia.base64,
           style,
           includeHashtags,
           includeEmojis,
+          customContext: topic || customContext || undefined,
         });
 
         if (response.error) {
@@ -184,7 +226,7 @@ function App() {
           const newTweet: SavedTweet = {
             id: Date.now().toString(),
             content: response.tweet,
-            topic,
+            topic: uploadedMedia.file.name,
             style,
             timestamp: Date.now(),
             favorite: false,
@@ -192,10 +234,63 @@ function App() {
           saveToHistory(newTweet);
           setCurrentTweetId(newTweet.id);
         }
+        setLoading(false);
+        return;
+      }
+
+      const request = buildRequest();
+
+      if (batchMode) {
+        // Batch generation
+        const response = await generateBatchTweets(request, batchCount);
+
+        if (response.error) {
+          setError(response.error);
+        } else if (response.tweets.length > 0) {
+          setBatchTweets(response.tweets);
+          setGeneratedTweet(response.tweets[0]);
+          setSelectedBatchIndex(0);
+          // Save all tweets to history
+          response.tweets.forEach((tweet) => {
+            const newTweet: SavedTweet = {
+              id: `${Date.now()}-${Math.random()}`,
+              content: tweet,
+              topic: selectedTemplate?.name || topic,
+              style,
+              timestamp: Date.now(),
+              favorite: false,
+            };
+            saveToHistory(newTweet);
+          });
+        }
+        setLoading(false);
+      } else if (useStreaming) {
+        // Streaming generation
+        await startStreaming(request);
+      } else {
+        // Regular single tweet generation
+        const response = await generateTweet(request);
+
+        if (response.error) {
+          setError(response.error);
+        } else {
+          setGeneratedTweet(response.tweet);
+          // Save to history
+          const newTweet: SavedTweet = {
+            id: Date.now().toString(),
+            content: response.tweet,
+            topic: selectedTemplate?.name || topic,
+            style,
+            timestamp: Date.now(),
+            favorite: false,
+          };
+          saveToHistory(newTweet);
+          setCurrentTweetId(newTweet.id);
+        }
+        setLoading(false);
       }
     } catch (err) {
       setError("Failed to generate tweet. Please try again.");
-    } finally {
       setLoading(false);
     }
   };
@@ -231,6 +326,7 @@ function App() {
   };
 
   const currentProvider = getCurrentProvider();
+  const displayContent = isStreaming ? streamedContent : generatedTweet;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
@@ -245,15 +341,49 @@ function App() {
                 Batch Mode
               </span>
             )}
+            {useStreaming && !batchMode && (
+              <span className="text-xs bg-green-600 text-white px-2 py-0.5 rounded-full flex items-center gap-1">
+                <Zap className="w-3 h-3" /> Streaming
+              </span>
+            )}
+            {uploadedMedia && (
+              <span className="text-xs bg-purple-600 text-white px-2 py-0.5 rounded-full flex items-center gap-1">
+                <ImageIcon className="w-3 h-3" /> Vision
+              </span>
+            )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             <Button
               variant={batchMode ? "default" : "ghost"}
               size="icon"
               onClick={() => setBatchMode(!batchMode)}
               title="Toggle Batch Mode (Ctrl+B)"
             >
-              <Layers className="h-5 w-5" />
+              <Layers className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={useStreaming ? "default" : "ghost"}
+              size="icon"
+              onClick={() => setUseStreaming(!useStreaming)}
+              title="Toggle Streaming (Ctrl+S)"
+            >
+              <Zap className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowTemplates(!showTemplates)}
+              title="Toggle Templates (Ctrl+T)"
+            >
+              <Settings className="h-5 w-5" />
+            </Button>
+            <Button
+              variant={uploadedMedia ? "default" : "ghost"}
+              size="icon"
+              onClick={() => document.querySelector<HTMLInputElement[type=\"file\"]")?.click()}
+              title="Upload Image/Video"
+            >
+              <ImageIcon className="h-5 w-5" />
             </Button>
             <Button
               variant="ghost"
@@ -283,28 +413,82 @@ function App() {
       </header>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-12 max-w-6xl">
-        <div className="grid lg:grid-cols-2 gap-8">
+      <main className="container mx-auto px-4 py-12 max-w-7xl">
+        <div className="grid lg:grid-cols-[1fr_350px] gap-8">
           {/* Left Column - Input */}
           <div className="space-y-8">
             {/* Hero Section */}
             <div className="text-center space-y-4">
               <h2 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-primary via-purple-500 to-pink-500 bg-clip-text text-transparent">
-                {batchMode ? "Generate Multiple Tweets" : "Create Viral Tweets with AI"}
+                {uploadedMedia ? (
+                  <>Generate Tweet from {uploadedMedia.type === "video" ? "Video" : "Image"}</>
+                ) : selectedTemplate ? (
+                  <>Create {selectedTemplate.name} Tweets</>
+                ) : batchMode ? (
+                  "Generate Multiple Tweets"
+                ) : (
+                  "Create Viral Tweets with AI"
+                )}
               </h2>
               <p className="text-muted-foreground text-lg">
-                {batchMode
+                {uploadedMedia
+                  ? "AI will analyze your media and create the perfect tweet"
+                  : selectedTemplate
+                  ? selectedTemplate.description
+                  : batchMode
                   ? `Generate ${batchCount} variations and pick the best one`
                   : "Generate engaging tweets in seconds using multiple AI providers"}
               </p>
             </div>
+
+            {/* Templates Panel */}
+            {showTemplates && (
+              <TemplateSelector
+                selectedTemplate={selectedTemplate}
+                onSelect={(template) => {
+                  setSelectedTemplate(template);
+                  if (template) {
+                    setShowTemplates(false);
+                  }
+                }}
+              />
+            )}
+
+            {/* Image/Video Upload */}
+            <ImageUploader
+              media={uploadedMedia}
+              onMediaChange={setUploadedMedia}
+              loading={loading || isStreaming}
+            />
+
+            {/* Custom Context for Vision */}
+            {uploadedMedia && (
+              <div className="space-y-2">
+                <Label htmlFor="context">Additional Context (Optional)</Label>
+                <Textarea
+                  id="context"
+                  placeholder="Add specific instructions for the tweet... (e.g., 'Focus on the product features', 'Make it humorous')"
+                  value={customContext}
+                  onChange={(e) => setCustomContext(e.target.value)}
+                  className="min-h-[60px] resize-none"
+                />
+              </div>
+            )}
+                  }
+                }}
+              />
+            )}
 
             {/* Input Card */}
             <Card className="border-primary/20 shadow-lg">
               <CardHeader>
                 <CardTitle>Generate Your Tweet{batchMode ? "s" : ""}</CardTitle>
                 <CardDescription>
-                  Enter a topic and customize your tweet style
+                  {uploadedMedia
+                    ? "AI will analyze your image/video and generate a tweet"
+                    : selectedTemplate
+                    ? `Using template: ${selectedTemplate.name}`
+                    : "Enter a topic and customize your tweet style"}
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -316,7 +500,13 @@ function App() {
                   </Label>
                   <Textarea
                     id="topic"
-                    placeholder="e.g., React tips, AI development, productivity hacks..."
+                    placeholder={
+                      uploadedMedia
+                        ? "Add context or instructions for the tweet (optional)..."
+                        : selectedTemplate
+                        ? `Add details for ${selectedTemplate.name}...`
+                        : "e.g., React tips, AI development, productivity hacks..."
+                    }
                     value={topic}
                     onChange={(e) => setTopic(e.target.value)}
                     className="min-h-[100px] resize-none"
@@ -377,17 +567,23 @@ function App() {
                   </label>
                 </div>
 
+                {/* Advanced Controls */}
+                <AdvancedControls
+                  settings={advancedSettings}
+                  onChange={setAdvancedSettings}
+                />
+
                 {/* Generate Button */}
                 <Button
                   onClick={handleGenerate}
-                  disabled={loading || !topic.trim()}
+                  disabled={loading || isStreaming || (!topic.trim() && !selectedTemplate && !uploadedMedia)}
                   className="w-full"
                   size="lg"
                 >
-                  {loading ? (
+                  {loading || isStreaming ? (
                     <>
                       <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                      Generating...
+                      {isStreaming ? "Generating..." : "Generating..."}
                     </>
                   ) : (
                     <>
@@ -398,9 +594,9 @@ function App() {
                 </Button>
 
                 {/* Error Message */}
-                {error && (
+                {(error || streamError) && (
                   <div className="p-4 bg-destructive/10 text-destructive rounded-lg border border-destructive/20">
-                    {error}
+                    {error || streamError}
                   </div>
                 )}
               </CardContent>
@@ -413,6 +609,8 @@ function App() {
                 <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+Enter</kbd> Generate</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+B</kbd> Batch mode</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+S</kbd> Streaming</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+T</kbd> Templates</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+C</kbd> Copy</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+R</kbd> Regenerate</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+H</kbd> History</div>
@@ -437,41 +635,42 @@ function App() {
             ) : (
               <>
                 {/* Tweet Preview */}
-                {showPreview && generatedTweet && (
+                {showPreview && displayContent && (
                   <div className="space-y-4">
                     <h3 className="text-lg font-semibold">Live Preview</h3>
-                    <TweetPreview content={generatedTweet} />
+                    <TweetPreview content={displayContent} />
                   </div>
                 )}
 
                 {/* Result Card */}
-                {generatedTweet && (
+                {displayContent && (
                   <Card className="border-primary/20 shadow-lg">
                     <CardHeader>
                       <CardTitle>Your Generated Tweet</CardTitle>
                       <CardDescription>
-                        Copy it, tweet it directly, or regenerate with different settings
+                        {isStreaming ? "Generating in real-time..." : "Copy it, tweet it directly, or regenerate"}
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <div className="p-6 bg-muted rounded-lg border">
                         <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                          {generatedTweet}
+                          {displayContent}
+                          {isStreaming && <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />}
                         </p>
                         <div className="mt-4 text-xs text-muted-foreground flex justify-between">
-                          <span>{generatedTweet.length} characters</span>
+                          <span>{displayContent.length} characters</span>
                           <span
                             className={
-                              generatedTweet.length > 280
+                              displayContent.length > 280
                                 ? "text-red-500"
-                                : generatedTweet.length > 260
+                                : displayContent.length > 260
                                 ? "text-yellow-500"
                                 : "text-green-500"
                             }
                           >
-                            {generatedTweet.length > 280
-                              ? `-${generatedTweet.length - 280} over limit`
-                              : `${280 - generatedTweet.length} remaining`}
+                            {displayContent.length > 280
+                              ? `-${displayContent.length - 280} over limit`
+                              : `${280 - displayContent.length} remaining`}
                           </span>
                         </div>
                       </div>
@@ -482,6 +681,7 @@ function App() {
                           onClick={() => handleCopy()}
                           variant="outline"
                           className="flex-1"
+                          disabled={isStreaming}
                         >
                           {copied ? (
                             <>
@@ -498,6 +698,7 @@ function App() {
                         <Button
                           onClick={() => handleTweet()}
                           className="flex-1 bg-[#1DA1F2] hover:bg-[#1a8cd8] text-white"
+                          disabled={isStreaming}
                         >
                           <Twitter className="mr-2 h-4 w-4" />
                           Post
@@ -505,7 +706,7 @@ function App() {
                         <Button
                           onClick={handleGenerate}
                           variant="outline"
-                          disabled={loading}
+                          disabled={loading || isStreaming}
                         >
                           <RefreshCw className="mr-2 h-4 w-4" />
                           Regenerate
@@ -515,10 +716,25 @@ function App() {
                           variant="outline"
                           size="icon"
                           title="Save to favorites"
+                          disabled={isStreaming}
                         >
                           <Star className="h-4 w-4" />
                         </Button>
                       </div>
+
+                      {/* Stop Streaming Button */}
+                      {isStreaming && (
+                        <Button
+                          onClick={() => {
+                            stopStreaming();
+                            setLoading(false);
+                          }}
+                          variant="destructive"
+                          className="w-full"
+                        >
+                          Stop Generation
+                        </Button>
+                      )}
                     </CardContent>
                   </Card>
                 )}
@@ -537,11 +753,12 @@ function App() {
                     <strong className="text-foreground">Features:</strong>{" "}
                     {batchMode ? (
                       <>Batch generation with multiple variations</>
+                    ) : useStreaming ? (
+                      <>Real-time streaming generation, templates, advanced controls</>
                     ) : (
                       <>
                         Live preview, history with favorites, keyboard shortcuts,
-                        batch mode, viral tweet generation, multiple styles,
-                        hashtag and emoji options, and Twitter thread support
+                        batch mode, templates, advanced controls, streaming responses
                       </>
                     )}
                   </p>
