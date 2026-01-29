@@ -12,22 +12,58 @@ export interface VisionAnalysisResponse {
   error?: string;
 }
 
+type VisionProvider = "openai" | "gemini";
+
+const VISION_CONFIGS = {
+  openai: {
+    url: "https://api.openai.com/v1/chat/completions",
+    model: "gpt-4o",
+    envKey: "VITE_OPENAI_API_KEY",
+  },
+  gemini: {
+    url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generate-content",
+    envKey: "VITE_GEMINI_API_KEY",
+  },
+};
+
+// Auto-detect which vision provider is available
+function detectVisionProvider(): VisionProvider {
+  const providers: VisionProvider[] = ["gemini", "openai"];
+
+  for (const provider of providers) {
+    const envKey = VISION_CONFIGS[provider].envKey;
+    if (import.meta.env[envKey]) {
+      return provider;
+    }
+  }
+
+  return "gemini"; // Default to Gemini (has free tier)
+}
+
 /**
- * Analyze an image and generate a tweet using OpenAI's vision capabilities
- * Requires VITE_OPENAI_API_KEY to be set
+ * Analyze an image and generate a tweet using vision capabilities
+ * Supports OpenAI GPT-4o or Google Gemini (free)
  */
 export async function analyzeImageAndGenerateTweet(
   request: VisionAnalysisRequest
 ): Promise<VisionAnalysisResponse> {
-  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
+  const provider = detectVisionProvider();
+  const config = VISION_CONFIGS[provider];
+
+  // Check for API key
+  const envKey = config.envKey;
+  const apiKey = import.meta.env[envKey];
 
   if (!apiKey) {
     return {
       description: "",
       tweet: "",
-      error: `OpenAI API key required for vision features. Please add VITE_OPENAI_API_KEY to your .env file.
+      error: `No vision API key found. Please add one of these to your .env file:
 
-Get a free key: https://platform.openai.com/api-keys`,
+- VITE_GEMINI_API_KEY (Recommended - Free tier available)
+- VITE_OPENAI_API_KEY (Paid)
+
+Get a free Gemini key: https://aistudio.google.com/app/apikey`,
     };
   }
 
@@ -61,60 +97,124 @@ Respond in JSON format:
 }`;
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "user",
-            content: [
+    let response: Response;
+    let data: any;
+
+    if (provider === "gemini") {
+      // Google Gemini API
+      response = await fetch(
+        `${config.url}?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
               {
-                type: "text",
-                text: prompt,
-              },
-              {
-                type: "image_url",
-                image_url: {
-                  url: `data:image/jpeg;base64,${imageBase64}`,
-                },
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: "image/jpeg",
+                      data: imageBase64,
+                    },
+                  },
+                  {
+                    text: prompt,
+                  },
+                ],
               },
             ],
-          },
-        ],
-        max_tokens: 500,
-      }),
-    });
+            generationConfig: {
+              responseMimeType: "text/plain",
+            },
+          }),
+        }
+      );
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      return {
-        description: "",
-        tweet: "",
-        error: error.error?.message || "Failed to analyze image",
-      };
-    }
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        return {
+          description: "",
+          tweet: "",
+          error: error.error?.message || "Failed to analyze image with Gemini",
+        };
+      }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || "";
+      data = await response.json();
+      const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-    // Try to parse JSON response
-    try {
-      const parsed = JSON.parse(content);
+      // Gemini returns plain text, extract tweet from it
+      // Try to find the tweet (usually after "Tweet:" or similar)
+      const tweetMatch = content.match(/(?:Tweet:|generated tweet:|output:)\s*\n([^\n]+)/i);
+      if (tweetMatch) {
+        return {
+          description: content,
+          tweet: tweetMatch[1].trim(),
+        };
+      }
+
       return {
-        description: parsed.description || "",
-        tweet: parsed.tweet || "",
+        description: content.substring(0, 200) + "...",
+        tweet: content.trim(),
       };
-    } catch {
-      // If not JSON, use the content as the tweet
-      return {
-        description: "Image analyzed successfully",
-        tweet: content,
-      };
+    } else {
+      // OpenAI API (original implementation)
+      response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: prompt,
+                },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: `data:image/jpeg;base64,${imageBase64}`,
+                  },
+                },
+              ],
+            },
+          ],
+          max_tokens: 500,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        return {
+          description: "",
+          tweet: "",
+          error: error.error?.message || "Failed to analyze image with OpenAI",
+        };
+      }
+
+      data = await response.json();
+      const content = data.choices?.[0]?.message?.content || "";
+
+      // Try to parse JSON response
+      try {
+        const parsed = JSON.parse(content);
+        return {
+          description: parsed.description || "",
+          tweet: parsed.tweet || "",
+        };
+      } catch {
+        // If not JSON, use the content as the tweet
+        return {
+          description: "Image analyzed successfully",
+          tweet: content,
+        };
+      }
     }
   } catch (error) {
     return {
@@ -123,9 +223,22 @@ Respond in JSON format:
       error:
         error instanceof Error
           ? error.message
-          : "Failed to analyze image. Please try again.",
+          : `Failed to analyze image using ${provider}. Please try again.`,
     };
   }
+}
+
+// Helper function to check which vision provider is being used
+export function getCurrentVisionProvider(): string {
+  const provider = detectVisionProvider();
+  const config = VISION_CONFIGS[provider];
+
+  const providerNames = {
+    openai: `OpenAI (${config.model})`,
+    gemini: `Google Gemini (free)`,
+  };
+
+  return providerNames[provider] || provider;
 }
 
 /**
