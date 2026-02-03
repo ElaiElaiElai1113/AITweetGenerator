@@ -149,7 +149,7 @@ export function ImageUploader({ media, onMediaChange, loading }: ImageUploaderPr
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              Requires OpenAI API key for vision analysis
+              Requires Gemini or OpenAI API key for vision analysis
             </p>
           </div>
           <input

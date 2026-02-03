@@ -21,10 +21,42 @@ const VISION_CONFIGS = {
     envKey: "VITE_OPENAI_API_KEY",
   },
   gemini: {
-    url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generate-content",
+    url: "https://generativelanguage.googleapis.com/v1beta/models",
+    model: "gemini-2.5-flash",
     envKey: "VITE_GEMINI_API_KEY",
   },
 };
+
+function parseVisionJson(text: string): { description: string; tweet: string } | null {
+  const stripped = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+
+  try {
+    const parsed = JSON.parse(stripped);
+    if (parsed && (parsed.description || parsed.tweet)) {
+      return {
+        description: parsed.description || "",
+        tweet: parsed.tweet || "",
+      };
+    }
+  } catch {
+    // fall through
+  }
+
+  const tweetMatch = stripped.match(/"tweet"\s*:\s*"([^"]+)"/i);
+  const descriptionMatch = stripped.match(/"description"\s*:\s*"([^"]+)"/i);
+  if (tweetMatch || descriptionMatch) {
+    return {
+      description: descriptionMatch ? descriptionMatch[1] : "",
+      tweet: tweetMatch ? tweetMatch[1] : "",
+    };
+  }
+
+  return null;
+}
 
 // Auto-detect which vision provider is available
 function detectVisionProvider(): VisionProvider {
@@ -90,24 +122,26 @@ Requirements:
 - ${includeEmojis ? "Use appropriate emojis" : "No emojis"}
 - Make it ${stylePrompts[style]}
 
-Respond in JSON format:
-{
-  "description": "brief description of what's in the image",
-  "tweet": "the generated tweet"
-}`;
+Return only JSON matching this schema:
+{ "description": string, "tweet": string }`;
 
   try {
     let response: Response;
     let data: any;
 
     if (provider === "gemini") {
-      // Google Gemini API
+      // Google Gemini API - use proxy in development to avoid CORS
+      const isDev = import.meta.env.DEV;
+      const baseUrl = isDev ? "/gemini-api/v1beta/models" : config.url;
+      const geminiUrl = `${baseUrl}/${config.model}:generateContent`;
+
       response = await fetch(
-        `${config.url}?key=${apiKey}`,
+        geminiUrl,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            "x-goog-api-key": apiKey,
           },
           body: JSON.stringify({
             contents: [
@@ -126,7 +160,18 @@ Respond in JSON format:
               },
             ],
             generationConfig: {
-              responseMimeType: "text/plain",
+              temperature: 0.7,
+              maxOutputTokens: 500,
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "object",
+                properties: {
+                  description: { type: "string" },
+                  tweet: { type: "string" },
+                },
+                required: ["description", "tweet"],
+                propertyOrdering: ["description", "tweet"],
+              },
             },
           }),
         }
@@ -142,9 +187,14 @@ Respond in JSON format:
       }
 
       data = await response.json();
-      const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      const parts = data.candidates?.[0]?.content?.parts || [];
+      const content = parts.map((p: { text?: string }) => p.text || "").join("");
 
-      // Gemini returns plain text, extract tweet from it
+      const parsed = parseVisionJson(content);
+      if (parsed) {
+        return parsed;
+      }
+
       // Try to find the tweet (usually after "Tweet:" or similar)
       const tweetMatch = content.match(/(?:Tweet:|generated tweet:|output:)\s*\n([^\n]+)/i);
       if (tweetMatch) {
@@ -201,20 +251,16 @@ Respond in JSON format:
       data = await response.json();
       const content = data.choices?.[0]?.message?.content || "";
 
-      // Try to parse JSON response
-      try {
-        const parsed = JSON.parse(content);
-        return {
-          description: parsed.description || "",
-          tweet: parsed.tweet || "",
-        };
-      } catch {
-        // If not JSON, use the content as the tweet
-        return {
-          description: "Image analyzed successfully",
-          tweet: content,
-        };
+      const parsed = parseVisionJson(content);
+      if (parsed) {
+        return parsed;
       }
+
+      // If not JSON, use the content as the tweet
+      return {
+        description: "Image analyzed successfully",
+        tweet: content,
+      };
     }
   } catch (error) {
     return {
@@ -231,10 +277,9 @@ Respond in JSON format:
 // Helper function to check which vision provider is being used
 export function getCurrentVisionProvider(): string {
   const provider = detectVisionProvider();
-  const config = VISION_CONFIGS[provider];
 
   const providerNames = {
-    openai: `OpenAI (${config.model})`,
+    openai: `OpenAI (gpt-4o)`,
     gemini: `Google Gemini (free)`,
   };
 
