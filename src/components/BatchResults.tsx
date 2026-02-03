@@ -1,13 +1,12 @@
 import { Card, CardContent } from "./ui/card";
 import { Button } from "./ui/button";
 import { Check, Copy, Twitter } from "lucide-react";
-import { TweetPreview } from "./TweetPreview";
 
 interface BatchResultsProps {
   tweets: string[];
   onSelect: (tweet: string, index: number) => void;
   selectedIndex: number | null;
-  onCopy: (tweet: string) => void;
+  onCopy: (tweet: string, index: number) => void;
   onTweet: (tweet: string) => void;
   copiedIndex: number | null;
 }
@@ -78,7 +77,7 @@ export function BatchResults({
                       variant="outline"
                       size="sm"
                       className="flex-1"
-                      onClick={() => onCopy(tweet)}
+                      onClick={() => onCopy(tweet, index)}
                     >
                       {isCopied ? (
                         <>

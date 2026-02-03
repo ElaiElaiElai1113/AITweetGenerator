@@ -1,5 +1,11 @@
 // Supported AI providers
-type AIProvider = "groq" | "huggingface" | "openai" | "deepseek" | "together";
+type AIProvider =
+  | "groq"
+  | "huggingface"
+  | "openai"
+  | "deepseek"
+  | "together"
+  | "gemini";
 
 import type { AdvancedSettings } from "./settings";
 import { getTonePrompt, getLengthPrompt } from "./settings";
@@ -33,6 +39,12 @@ const API_CONFIGS = {
     url: "https://api.together.xyz/v1/chat/completions",
     model: "mistralai/Mixtral-8x7B-Instruct-v0.1",
     envKey: "VITE_TOGETHER_API_KEY",
+    useProxy: false,
+  },
+  gemini: {
+    url: "https://generativelanguage.googleapis.com/v1beta/models",
+    model: "gemini-2.5-flash",
+    envKey: "VITE_GEMINI_API_KEY",
     useProxy: false,
   },
 };
@@ -73,6 +85,7 @@ function detectProvider(): AIProvider {
     "deepseek",
     "openai",
     "together",
+    "gemini",
     "huggingface",
   ];
 
@@ -106,6 +119,7 @@ export async function generateTweet(
 - VITE_OPENAI_API_KEY ($5 free credit)
 - VITE_TOGETHER_API_KEY ($25 free credit)
 - VITE_HUGGINGFACE_API_KEY (30K free requests/month)
+- VITE_GEMINI_API_KEY (Google AI Studio)
 
 Get a free Groq key: https://console.groq.com/keys`,
     };
@@ -154,8 +168,8 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
     const envKey = config.envKey;
     const apiKey = import.meta.env[envKey];
 
-    if (provider === "huggingface") {
-      headers["Authorization"] = `Bearer ${apiKey}`;
+    if (provider === "gemini") {
+      headers["x-goog-api-key"] = apiKey;
     } else {
       headers["Authorization"] = `Bearer ${apiKey}`;
     }
@@ -163,26 +177,48 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
     // Use custom temperature if provided, otherwise default
     const temperature = advancedSettings?.temperature ?? 0.7;
 
-    const response = await fetch(config.url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: config.model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        temperature,
-        max_tokens: 1000,
-      }),
-    });
+    const isGemini = provider === "gemini";
+    const response = await fetch(
+      isGemini ? `${config.url}/${config.model}:generateContent` : config.url,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(
+          isGemini
+            ? {
+                contents: [
+                  {
+                    parts: [
+                      {
+                        text: `You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.\n\n${prompt}`,
+                      },
+                    ],
+                  },
+                ],
+                generationConfig: {
+                  temperature,
+                  maxOutputTokens: 1000,
+                },
+              }
+            : {
+                model: config.model,
+                messages: [
+                  {
+                    role: "system",
+                    content:
+                      "You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.",
+                  },
+                  {
+                    role: "user",
+                    content: prompt,
+                  },
+                ],
+                temperature,
+                max_tokens: 1000,
+              },
+        ),
+      },
+    );
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
@@ -196,7 +232,9 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
     }
 
     const data = await response.json();
-    const tweet = data.choices?.[0]?.message?.content || "";
+    const tweet = isGemini
+      ? data.candidates?.[0]?.content?.parts?.[0]?.text || ""
+      : data.choices?.[0]?.message?.content || "";
 
     return { tweet: tweet.trim() };
   } catch (error) {
@@ -239,6 +277,7 @@ export async function generateBatchTweets(
 - VITE_OPENAI_API_KEY ($5 free credit)
 - VITE_TOGETHER_API_KEY ($25 free credit)
 - VITE_HUGGINGFACE_API_KEY (30K free requests/month)
+- VITE_GEMINI_API_KEY (Google AI Studio)
 
 Get a free Groq key: https://console.groq.com/keys`,
     };
@@ -265,28 +304,54 @@ Output format: Return each tweet on a separate line, separated by "---". No numb
 
     const envKey = config.envKey;
     const apiKey = import.meta.env[envKey];
-    headers["Authorization"] = `Bearer ${apiKey}`;
+    const isGemini = provider === "gemini";
+    if (isGemini) {
+      headers["x-goog-api-key"] = apiKey;
+    } else {
+      headers["Authorization"] = `Bearer ${apiKey}`;
+    }
 
-    const response = await fetch(config.url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: config.model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a viral Twitter content creator who specializes in creating engaging, diverse tweets that resonate with audiences.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        temperature: 0.9, // Higher temperature for more variety
-        max_tokens: 2000,
-      }),
-    });
+    const response = await fetch(
+      isGemini ? `${config.url}/${config.model}:generateContent` : config.url,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(
+          isGemini
+            ? {
+                contents: [
+                  {
+                    parts: [
+                      {
+                        text: `You are a viral Twitter content creator who specializes in creating engaging, diverse tweets that resonate with audiences.\n\n${prompt}`,
+                      },
+                    ],
+                  },
+                ],
+                generationConfig: {
+                  temperature: 0.9,
+                  maxOutputTokens: 2000,
+                },
+              }
+            : {
+                model: config.model,
+                messages: [
+                  {
+                    role: "system",
+                    content:
+                      "You are a viral Twitter content creator who specializes in creating engaging, diverse tweets that resonate with audiences.",
+                  },
+                  {
+                    role: "user",
+                    content: prompt,
+                  },
+                ],
+                temperature: 0.9, // Higher temperature for more variety
+                max_tokens: 2000,
+              },
+        ),
+      },
+    );
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
@@ -300,7 +365,9 @@ Output format: Return each tweet on a separate line, separated by "---". No numb
     }
 
     const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || "";
+    const content = isGemini
+      ? data.candidates?.[0]?.content?.parts?.[0]?.text || ""
+      : data.choices?.[0]?.message?.content || "";
 
     // Parse the response to extract individual tweets
     const tweets = content

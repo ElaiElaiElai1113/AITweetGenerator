@@ -40,9 +40,9 @@ export function AdvancedControls({ settings, onChange }: AdvancedControlsProps) 
             </div>
             <div className="px-2">
               <Slider
-                value={[settings.temperature]}
-                onValueChange={([value]) =>
-                  onChange({ ...settings, temperature: value })
+                value={settings.temperature.toString()}
+                onChange={(e) =>
+                  onChange({ ...settings, temperature: parseFloat(e.target.value) })
                 }
                 min={0.3}
                 max={1.2}

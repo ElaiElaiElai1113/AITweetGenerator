@@ -1,5 +1,5 @@
 import { Card } from "./ui/card";
-import { User, BadgeCheck } from "lucide-react";
+import { BadgeCheck } from "lucide-react";
 
 interface TweetPreviewProps {
   content: string;
@@ -12,7 +12,6 @@ export function TweetPreview({
   content,
   username = "yourhandle",
   displayName = "Your Name",
-  avatarUrl,
 }: TweetPreviewProps) {
   // Parse tweet content for links, hashtags, mentions
   const parseContent = (text: string) => {

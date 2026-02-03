@@ -12,7 +12,8 @@ import {
 } from "./lib/history";
 import { useKeyboardShortcuts } from "./lib/useKeyboardShortcuts";
 import { useStreamingGeneration } from "./lib/useStreamingGeneration";
-import { analyzeImageAndGenerateTweet, type UploadedMedia } from "./lib/vision";
+import { analyzeImageAndGenerateTweet } from "./lib/vision";
+import { type UploadedMedia } from "./components/ImageUploader";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { TweetPreview } from "./components/TweetPreview";
 import { BatchResults } from "./components/BatchResults";
@@ -68,7 +69,6 @@ function App() {
   const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(DEFAULT_SETTINGS);
   const [useStreaming, setUseStreaming] = useState(true);
   const [showTemplates, setShowTemplates] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Vision feature states
   const [uploadedMedia, setUploadedMedia] = useState<UploadedMedia | null>(null);
@@ -191,7 +191,7 @@ function App() {
     includeEmojis,
     template: selectedTemplate?.prompt,
     useTemplate: !!selectedTemplate,
-    advancedSettings: showAdvanced ? advancedSettings : undefined,
+    advancedSettings: advancedSettings,
   });
 
   const handleGenerate = async () => {
@@ -380,7 +380,7 @@ function App() {
             <Button
               variant={uploadedMedia ? "default" : "ghost"}
               size="icon"
-              onClick={() => document.querySelector<HTMLInputElement[type=\"file\"]")?.click()}
+              onClick={() => document.querySelector<HTMLInputElement>('input[type="file"]')?.click()}
               title="Upload Image/Video"
             >
               <ImageIcon className="h-5 w-5" />
@@ -473,10 +473,6 @@ function App() {
                   className="min-h-[60px] resize-none"
                 />
               </div>
-            )}
-                  }
-                }}
-              />
             )}
 
             {/* Input Card */}

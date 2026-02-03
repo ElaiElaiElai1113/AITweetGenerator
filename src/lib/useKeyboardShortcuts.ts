@@ -46,13 +46,6 @@ export function useKeyboardShortcuts(shortcuts: ShortcutConfig[]) {
         const metaMatch = !!shortcut.metaKey === (event.metaKey || event.ctrlKey);
         const shiftMatch = !!shortcut.shiftKey === event.shiftKey;
 
-        // For single letter shortcuts, require Ctrl/Cmd unless no modifiers specified
-        const requiresModifier =
-          shortcut.key.length === 1 &&
-          !shortcut.ctrlKey &&
-          !shortcut.metaKey &&
-          !shortcut.shiftKey;
-
         if (keyMatch && ctrlMatch && metaMatch && shiftMatch) {
           event.preventDefault();
           shortcut.action();
