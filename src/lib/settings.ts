@@ -49,3 +49,40 @@ export function getLengthPrompt(length: AdvancedSettings["length"]): string {
   };
   return lengthPrompts[length];
 }
+
+export function getMaxLength(length: AdvancedSettings["length"]): number {
+  const maxLimits = {
+    short: 150,
+    medium: 230,
+    long: 280,
+  };
+  return maxLimits[length];
+}
+
+export function truncateTweet(tweet: string, maxLength: number): string {
+  // Remove any leading/trailing whitespace
+  let truncated = tweet.trim();
+
+  // If already under limit, return as-is
+  if (truncated.length <= maxLength) {
+    return truncated;
+  }
+
+  // Truncate to max length, but try to end at a word boundary
+  if (truncated.length > maxLength) {
+    // First try: truncate at max length
+    truncated = truncated.substring(0, maxLength);
+
+    // Second try: find last complete word within limit
+    const lastSpace = truncated.lastIndexOf(" ");
+    if (lastSpace > maxLength * 0.8) {
+      // If we can keep at least 80% of the content and end on a word boundary, do it
+      truncated = truncated.substring(0, lastSpace);
+    }
+
+    // Remove trailing punctuation that might be left after truncation
+    truncated = truncated.trim().replace(/[,.:!?\s]+$/, "");
+  }
+
+  return truncated;
+}

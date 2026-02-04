@@ -5,10 +5,57 @@ type AIProvider =
   | "openai"
   | "deepseek"
   | "together"
-  | "gemini";
+  | "gemini"
+  | "glm";
 
 import type { AdvancedSettings } from "./settings";
-import { getTonePrompt, getLengthPrompt } from "./settings";
+import { getTonePrompt, getLengthPrompt, getMaxLength, truncateTweet } from "./settings";
+
+// Helper function to generate JWT token for Zhipu AI (GLM)
+async function generateGLMToken(apiKey: string): Promise<string> {
+  const [id, secret] = apiKey.split(".");
+  const now = Date.now();
+  const header = { alg: "HS256", sign_type: "SIGN" };
+  const payload = {
+    api_key: id,
+    exp: now + 3600000, // 1 hour expiry
+    timestamp: now,
+  };
+
+  // Simple base64url encoding
+  const base64UrlEncode = (obj: unknown) => {
+    return btoa(JSON.stringify(obj))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=/g, "");
+  };
+
+  const encodedHeader = base64UrlEncode(header);
+  const encodedPayload = base64UrlEncode(payload);
+  const data = `${encodedHeader}.${encodedPayload}`;
+
+  // Sign using Web Crypto API
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(secret);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(data)
+  );
+  const signatureBase64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
+
+  return `${data}.${signatureBase64}`;
+}
 
 const API_CONFIGS = {
   groq: {
@@ -47,6 +94,12 @@ const API_CONFIGS = {
     envKey: "VITE_GEMINI_API_KEY",
     useProxy: false,
   },
+  glm: {
+    url: "https://api.z.ai/api/coding/paas/v4/chat/completions",
+    model: "GLM-4.7",
+    envKey: "VITE_GLM_API_KEY",
+    useProxy: false,
+  },
 };
 
 export interface TweetGenerationRequest {
@@ -81,6 +134,7 @@ const stylePrompts = {
 // Auto-detect which API key is available
 function detectProvider(): AIProvider {
   const providers: AIProvider[] = [
+    "glm",
     "groq",
     "deepseek",
     "openai",
@@ -114,6 +168,7 @@ export async function generateTweet(
       tweet: "",
       error: `No API key found. Please add one of these to your .env file:
 
+- VITE_GLM_API_KEY (GLM-4.7)
 - VITE_GROQ_API_KEY (Recommended - Free, unlimited, fast)
 - VITE_DEEPSEEK_API_KEY (Free tier available)
 - VITE_OPENAI_API_KEY ($5 free credit)
@@ -170,6 +225,9 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
 
     if (provider === "gemini") {
       headers["x-goog-api-key"] = apiKey;
+    } else if (provider === "glm") {
+      const token = await generateGLMToken(apiKey);
+      headers["Authorization"] = `Bearer ${token}`;
     } else {
       headers["Authorization"] = `Bearer ${apiKey}`;
     }
@@ -236,7 +294,11 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
       ? data.candidates?.[0]?.content?.parts?.[0]?.text || ""
       : data.choices?.[0]?.message?.content || "";
 
-    return { tweet: tweet.trim() };
+    // Truncate to max character limit based on length setting
+    const maxLength = advancedSettings ? getMaxLength(advancedSettings.length) : 280;
+    const truncatedTweet = truncateTweet(tweet.trim(), maxLength);
+
+    return { tweet: truncatedTweet };
   } catch (error) {
     return {
       tweet: "",
@@ -272,6 +334,7 @@ export async function generateBatchTweets(
       tweets: [],
       error: `No API key found. Please add one of these to your .env file:
 
+- VITE_GLM_API_KEY (GLM-4.7)
 - VITE_GROQ_API_KEY (Recommended - Free, unlimited, fast)
 - VITE_DEEPSEEK_API_KEY (Free tier available)
 - VITE_OPENAI_API_KEY ($5 free credit)
@@ -369,11 +432,15 @@ Output format: Return each tweet on a separate line, separated by "---". No numb
       ? data.candidates?.[0]?.content?.parts?.[0]?.text || ""
       : data.choices?.[0]?.message?.content || "";
 
+    // Get max length for truncation
+    const maxLength = request.advancedSettings ? getMaxLength(request.advancedSettings.length) : 280;
+
     // Parse the response to extract individual tweets
     const tweets = content
       .split("---")
       .map((t: string) => t.trim())
       .filter((t: string) => t.length > 0)
+      .map((t: string) => truncateTweet(t, maxLength)) // Truncate each tweet
       .slice(0, count); // Ensure we only return the requested count
 
     return { tweets };

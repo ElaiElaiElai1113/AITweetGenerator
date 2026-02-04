@@ -216,6 +216,7 @@ function App() {
           includeHashtags,
           includeEmojis,
           customContext: topic || customContext || undefined,
+          advancedSettings: advancedSettings,
         });
 
         if (response.error) {

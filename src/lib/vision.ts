@@ -1,18 +1,67 @@
+import { getMaxLength, truncateTweet } from "./settings";
+import type { AdvancedSettings } from "./settings";
+
 export interface VisionAnalysisRequest {
   imageBase64: string;
   style: "viral" | "professional" | "casual" | "thread";
   includeHashtags: boolean;
   includeEmojis: boolean;
   customContext?: string;
+  advancedSettings?: AdvancedSettings;
 }
 
 export interface VisionAnalysisResponse {
   description: string;
   tweet: string;
+  location?: string;
   error?: string;
 }
 
-type VisionProvider = "openai" | "gemini";
+type VisionProvider = "openai" | "gemini" | "glm";
+
+// Helper function to generate JWT token for Zhipu AI (GLM)
+async function generateGLMToken(apiKey: string): Promise<string> {
+  const [id, secret] = apiKey.split(".");
+  const now = Date.now();
+  const header = { alg: "HS256", sign_type: "SIGN" };
+  const payload = {
+    api_key: id,
+    exp: now + 3600000,
+    timestamp: now,
+  };
+
+  const base64UrlEncode = (obj: unknown) => {
+    return btoa(JSON.stringify(obj))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=/g, "");
+  };
+
+  const encodedHeader = base64UrlEncode(header);
+  const encodedPayload = base64UrlEncode(payload);
+  const data = `${encodedHeader}.${encodedPayload}`;
+
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(secret);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(data)
+  );
+  const signatureBase64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
+
+  return `${data}.${signatureBase64}`;
+}
 
 const VISION_CONFIGS = {
   openai: {
@@ -25,9 +74,14 @@ const VISION_CONFIGS = {
     model: "gemini-2.5-flash",
     envKey: "VITE_GEMINI_API_KEY",
   },
+  glm: {
+    url: "https://api.z.ai/api/coding/paas/v4/chat/completions",
+    model: "GLM-4.5V",
+    envKey: "VITE_GLM_API_KEY",
+  },
 };
 
-function parseVisionJson(text: string): { description: string; tweet: string } | null {
+function parseVisionJson(text: string): { description: string; tweet: string; location?: string } | null {
   const stripped = text
     .trim()
     .replace(/^```(?:json)?\s*/i, "")
@@ -40,6 +94,7 @@ function parseVisionJson(text: string): { description: string; tweet: string } |
       return {
         description: parsed.description || "",
         tweet: parsed.tweet || "",
+        location: parsed.location || undefined,
       };
     }
   } catch {
@@ -48,10 +103,12 @@ function parseVisionJson(text: string): { description: string; tweet: string } |
 
   const tweetMatch = stripped.match(/"tweet"\s*:\s*"([^"]+)"/i);
   const descriptionMatch = stripped.match(/"description"\s*:\s*"([^"]+)"/i);
+  const locationMatch = stripped.match(/"location"\s*:\s*"([^"]+)"/i);
   if (tweetMatch || descriptionMatch) {
     return {
       description: descriptionMatch ? descriptionMatch[1] : "",
       tweet: tweetMatch ? tweetMatch[1] : "",
+      location: locationMatch ? locationMatch[1] : undefined,
     };
   }
 
@@ -60,7 +117,7 @@ function parseVisionJson(text: string): { description: string; tweet: string } |
 
 // Auto-detect which vision provider is available
 function detectVisionProvider(): VisionProvider {
-  const providers: VisionProvider[] = ["gemini", "openai"];
+  const providers: VisionProvider[] = ["glm", "gemini", "openai"];
 
   for (const provider of providers) {
     const envKey = VISION_CONFIGS[provider].envKey;
@@ -69,7 +126,7 @@ function detectVisionProvider(): VisionProvider {
     }
   }
 
-  return "gemini"; // Default to Gemini (has free tier)
+  return "glm"; // Default to GLM
 }
 
 /**
@@ -85,6 +142,10 @@ export async function analyzeImageAndGenerateTweet(
   // Check for API key
   const envKey = config.envKey;
   const apiKey = import.meta.env[envKey];
+  const { advancedSettings } = request;
+
+  // Get max length for truncation (default to 280 if no advanced settings)
+  const maxLength = advancedSettings ? getMaxLength(advancedSettings.length) : 280;
 
   if (!apiKey) {
     return {
@@ -92,7 +153,8 @@ export async function analyzeImageAndGenerateTweet(
       tweet: "",
       error: `No vision API key found. Please add one of these to your .env file:
 
-- VITE_GEMINI_API_KEY (Recommended - Free tier available)
+- VITE_GLM_API_KEY (GLM-4.5V)
+- VITE_GEMINI_API_KEY (Free tier available)
 - VITE_OPENAI_API_KEY (Paid)
 
 Get a free Gemini key: https://aistudio.google.com/app/apikey`,
@@ -116,14 +178,16 @@ Analyze this image and generate a ${style} tweet based on what you see.`
 
 Requirements:
 - Describe what's in the image briefly
+- Identify the location if visible (landmarks, scenery, street signs, building names, recognizable features, etc.)
 - Create a ${style} tweet that relates to the image content
+- Include the detected location naturally in the tweet when possible (e.g., "at [Location]", "visiting [Location]", "[Location] vibes", etc.)
 - Under 280 characters for the tweet
 - ${includeHashtags ? "Include relevant hashtags" : "No hashtags"}
 - ${includeEmojis ? "Use appropriate emojis" : "No emojis"}
 - Make it ${stylePrompts[style]}
 
 Return only JSON matching this schema:
-{ "description": string, "tweet": string }`;
+{ "description": string, "tweet": string, "location"?: string }`;
 
   try {
     let response: Response;
@@ -168,9 +232,10 @@ Return only JSON matching this schema:
                 properties: {
                   description: { type: "string" },
                   tweet: { type: "string" },
+                  location: { type: "string" },
                 },
                 required: ["description", "tweet"],
-                propertyOrdering: ["description", "tweet"],
+                propertyOrdering: ["description", "tweet", "location"],
               },
             },
           }),
@@ -192,7 +257,11 @@ Return only JSON matching this schema:
 
       const parsed = parseVisionJson(content);
       if (parsed) {
-        return parsed;
+        return {
+          description: parsed.description,
+          tweet: truncateTweet(parsed.tweet, maxLength),
+          location: parsed.location,
+        };
       }
 
       // Try to find the tweet (usually after "Tweet:" or similar)
@@ -200,13 +269,71 @@ Return only JSON matching this schema:
       if (tweetMatch) {
         return {
           description: content,
-          tweet: tweetMatch[1].trim(),
+          tweet: truncateTweet(tweetMatch[1].trim(), maxLength),
         };
       }
 
       return {
         description: content.substring(0, 200) + "...",
-        tweet: content.trim(),
+        tweet: truncateTweet(content.trim(), maxLength),
+      };
+    } else if (provider === "glm") {
+      // GLM Vision API
+      const token = await generateGLMToken(apiKey);
+      response = await fetch(config.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          model: config.model,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: `data:image/jpeg;base64,${imageBase64}`,
+                  },
+                },
+                {
+                  type: "text",
+                  text: prompt,
+                },
+              ],
+            },
+          ],
+          temperature: 0.7,
+          max_tokens: 500,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        return {
+          description: "",
+          tweet: "",
+          error: error.error?.message || error.message || "Failed to analyze image with GLM",
+        };
+      }
+
+      data = await response.json();
+      const content = data.choices?.[0]?.message?.content || "";
+
+      const parsed = parseVisionJson(content);
+      if (parsed) {
+        return {
+          description: parsed.description,
+          tweet: truncateTweet(parsed.tweet, maxLength),
+          location: parsed.location,
+        };
+      }
+
+      return {
+        description: "Image analyzed successfully",
+        tweet: truncateTweet(content, maxLength),
       };
     } else {
       // OpenAI API (original implementation)
@@ -253,13 +380,17 @@ Return only JSON matching this schema:
 
       const parsed = parseVisionJson(content);
       if (parsed) {
-        return parsed;
+        return {
+          description: parsed.description,
+          tweet: truncateTweet(parsed.tweet, maxLength),
+          location: parsed.location,
+        };
       }
 
       // If not JSON, use the content as the tweet
       return {
         description: "Image analyzed successfully",
-        tweet: content,
+        tweet: truncateTweet(content, maxLength),
       };
     }
   } catch (error) {
@@ -281,6 +412,7 @@ export function getCurrentVisionProvider(): string {
   const providerNames = {
     openai: `OpenAI (gpt-4o)`,
     gemini: `Google Gemini (free)`,
+    glm: `GLM (GLM-4.5V)`,
   };
 
   return providerNames[provider] || provider;
