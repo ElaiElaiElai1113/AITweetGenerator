@@ -20,7 +20,10 @@ import { BatchResults } from "./components/BatchResults";
 import { TemplateSelector } from "./components/TemplateSelector";
 import { AdvancedControls } from "./components/AdvancedControls";
 import { ImageUploader } from "./components/ImageUploader";
+import { PresetSelector } from "./components/PresetSelector";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { DEFAULT_SETTINGS, type AdvancedSettings } from "./lib/settings";
+import type { SettingsPreset } from "./lib/presets";
 import { type Template } from "./lib/templates";
 import {
   Copy,
@@ -38,6 +41,7 @@ import {
   Zap,
   Settings,
   ImageIcon,
+  Edit,
 } from "lucide-react";
 import { useTheme } from "./components/theme-provider";
 
@@ -56,6 +60,8 @@ function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
   const [currentTweetId, setCurrentTweetId] = useState<string>("");
+  const [editMode, setEditMode] = useState(false);
+  const [editedTweet, setEditedTweet] = useState("");
 
   // Batch mode states
   const [batchMode, setBatchMode] = useState(false);
@@ -326,11 +332,47 @@ function App() {
     }
   };
 
+  const handleEdit = () => {
+    setEditedTweet(generatedTweet);
+    setEditMode(true);
+  };
+
+  const handleSaveEdit = () => {
+    setGeneratedTweet(editedTweet);
+    setEditMode(false);
+    // Update the saved tweet in history
+    if (currentTweetId) {
+      const newTweet: SavedTweet = {
+        id: Date.now().toString(),
+        content: editedTweet,
+        topic: selectedTemplate?.name || topic || "Edited tweet",
+        style,
+        timestamp: Date.now(),
+        favorite: false,
+      };
+      saveToHistory(newTweet);
+      setCurrentTweetId(newTweet.id);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditMode(false);
+    setEditedTweet("");
+  };
+
+  const handleLoadPreset = (preset: SettingsPreset["settings"]) => {
+    setStyle(preset.style);
+    setIncludeHashtags(preset.includeHashtags);
+    setIncludeEmojis(preset.includeEmojis);
+    setAdvancedSettings(preset.advancedSettings);
+  };
+
   const currentProvider = getCurrentProvider();
   const displayContent = isStreaming ? streamedContent : generatedTweet;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
       {/* Header */}
       <header className="border-b bg-background/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
@@ -570,6 +612,15 @@ function App() {
                   onChange={setAdvancedSettings}
                 />
 
+                {/* Preset Selector */}
+                <PresetSelector
+                  style={style}
+                  includeHashtags={includeHashtags}
+                  includeEmojis={includeEmojis}
+                  advancedSettings={advancedSettings}
+                  onLoadPreset={handleLoadPreset}
+                />
+
                 {/* Generate Button */}
                 <Button
                   onClick={handleGenerate}
@@ -640,7 +691,7 @@ function App() {
                 )}
 
                 {/* Result Card */}
-                {displayContent && (
+                {displayContent && !editMode && (
                   <Card className="border-primary/20 shadow-lg">
                     <CardHeader>
                       <CardTitle>Your Generated Tweet</CardTitle>
@@ -709,6 +760,14 @@ function App() {
                           Regenerate
                         </Button>
                         <Button
+                          onClick={handleEdit}
+                          variant="outline"
+                          disabled={isStreaming || !generatedTweet}
+                        >
+                          <Edit className="mr-2 h-4 w-4" />
+                          Edit
+                        </Button>
+                        <Button
                           onClick={handleFavorite}
                           variant="outline"
                           size="icon"
@@ -732,6 +791,55 @@ function App() {
                           Stop Generation
                         </Button>
                       )}
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Edit Mode Card */}
+                {editMode && (
+                  <Card className="border-primary/20 shadow-lg">
+                    <CardHeader>
+                      <CardTitle>Edit Your Tweet</CardTitle>
+                      <CardDescription>Make changes before saving</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <Textarea
+                        value={editedTweet}
+                        onChange={(e) => setEditedTweet(e.target.value)}
+                        className="min-h-[150px] resize-none"
+                        placeholder="Edit your tweet..."
+                      />
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>{editedTweet.length} characters</span>
+                        <span
+                          className={
+                            editedTweet.length > 280
+                              ? "text-red-500"
+                              : editedTweet.length > 260
+                              ? "text-yellow-500"
+                              : "text-green-500"
+                          }
+                        >
+                          {editedTweet.length > 280
+                            ? `-${editedTweet.length - 280} over limit`
+                            : `${280 - editedTweet.length} remaining`}
+                        </span>
+                      </div>
+                      <div className="flex gap-3">
+                        <Button
+                          onClick={handleSaveEdit}
+                          className="flex-1"
+                          disabled={!editedTweet.trim()}
+                        >
+                          Save Changes
+                        </Button>
+                        <Button
+                          onClick={handleCancelEdit}
+                          variant="outline"
+                        >
+                          Cancel
+                        </Button>
+                      </div>
                     </CardContent>
                   </Card>
                 )}
@@ -819,6 +927,7 @@ function App() {
         }}
       />
     </div>
+    </ErrorBoundary>
   );
 }
 

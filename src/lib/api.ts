@@ -10,6 +10,7 @@ type AIProvider =
 
 import type { AdvancedSettings } from "./settings";
 import { getTonePrompt, getLengthPrompt, getMaxLength, truncateTweet } from "./settings";
+import { fetchWithRetry } from "./fetch";
 
 // Helper function to generate JWT token for Zhipu AI (GLM)
 async function generateGLMToken(apiKey: string): Promise<string> {
@@ -236,7 +237,7 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
     const temperature = advancedSettings?.temperature ?? 0.7;
 
     const isGemini = provider === "gemini";
-    const response = await fetch(
+    const response = await fetchWithRetry(
       isGemini ? `${config.url}/${config.model}:generateContent` : config.url,
       {
         method: "POST",
@@ -275,6 +276,8 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
                 max_tokens: 1000,
               },
         ),
+        maxRetries: 3,
+        initialDelay: 1000,
       },
     );
 
@@ -374,7 +377,7 @@ Output format: Return each tweet on a separate line, separated by "---". No numb
       headers["Authorization"] = `Bearer ${apiKey}`;
     }
 
-    const response = await fetch(
+    const response = await fetchWithRetry(
       isGemini ? `${config.url}/${config.model}:generateContent` : config.url,
       {
         method: "POST",
@@ -413,6 +416,8 @@ Output format: Return each tweet on a separate line, separated by "---". No numb
                 max_tokens: 2000,
               },
         ),
+        maxRetries: 3,
+        initialDelay: 1000,
       },
     );
 
@@ -452,5 +457,176 @@ Output format: Return each tweet on a separate line, separated by "---". No numb
           ? error.message
           : "Failed to generate tweets. Please try again.",
     };
+  }
+}
+
+// Generate tweet with real streaming (SSE) support
+export async function* generateTweetStream(
+  request: TweetGenerationRequest
+): AsyncGenerator<string, void, unknown> {
+  const provider = detectProvider();
+  const config = API_CONFIGS[provider];
+
+  // Check for API key
+  const envKeys = Object.values(API_CONFIGS).map((c) => c.envKey);
+  const hasAnyKey = envKeys.some((key) => import.meta.env[key]);
+
+  if (!hasAnyKey) {
+    throw new Error(`No API key found. Please add one of these to your .env file:
+
+- VITE_GLM_API_KEY (GLM-4.7)
+- VITE_GROQ_API_KEY (Recommended - Free, unlimited, fast)
+- VITE_DEEPSEEK_API_KEY (Free tier available)
+- VITE_OPENAI_API_KEY ($5 free credit)
+- VITE_TOGETHER_API_KEY ($25 free credit)
+- VITE_HUGGINGFACE_API_KEY (30K free requests/month)
+- VITE_GEMINI_API_KEY (Google AI Studio)
+
+Get a free Groq key: https://console.groq.com/keys`);
+  }
+
+  const { topic, style, includeHashtags, includeEmojis, template, advancedSettings, useTemplate } = request;
+
+  // Build the prompt
+  let basePrompt: string;
+  if (useTemplate && template) {
+    basePrompt = `Create a tweet following this template: "${template}"
+
+Topic: ${topic}
+Style: ${style}`;
+  } else {
+    basePrompt = `Generate a ${style} tweet about: "${topic}"`;
+  }
+
+  // Add advanced settings to prompt
+  let advancedPrompt = "";
+  if (advancedSettings) {
+    advancedPrompt = `
+Additional requirements:
+- ${getTonePrompt(advancedSettings.tone)}
+- ${getLengthPrompt(advancedSettings.length)}`;
+  }
+
+  const prompt = `${basePrompt}
+
+Requirements:
+- Under 280 characters total
+- ${includeHashtags ? "Include relevant hashtags at the end" : "No hashtags"}
+- ${includeEmojis ? "Use appropriate emojis to make it engaging" : "No emojis"}
+- Make it ${stylePrompts[style]}
+${advancedPrompt}
+
+Output ONLY the tweet text, no explanations or extra commentary.`;
+
+  try {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    // Add authorization based on provider
+    const envKey = config.envKey;
+    const apiKey = import.meta.env[envKey];
+
+    if (provider === "gemini") {
+      headers["x-goog-api-key"] = apiKey;
+    } else if (provider === "glm") {
+      const token = await generateGLMToken(apiKey);
+      headers["Authorization"] = `Bearer ${token}`;
+    } else {
+      headers["Authorization"] = `Bearer ${apiKey}`;
+    }
+
+    // Use custom temperature if provided, otherwise default
+    const temperature = advancedSettings?.temperature ?? 0.7;
+
+    // Check if provider supports streaming
+    const supportsStreaming = ["groq", "openai", "deepseek", "together"].includes(provider);
+
+    if (supportsStreaming) {
+      // Use real streaming for supported providers
+      const response = await fetchWithRetry(
+        config.url,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model: config.model,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.",
+              },
+              {
+                role: "user",
+                content: prompt,
+              },
+            ],
+            temperature,
+            max_tokens: 1000,
+            stream: true, // Enable streaming
+          }),
+          maxRetries: 3,
+          initialDelay: 1000,
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(
+          error.error?.message ||
+            error.message ||
+            `Failed to generate tweet using ${provider}`
+        );
+      }
+
+      // Read the stream
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("No response body");
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6);
+            if (data === "[DONE]") continue;
+
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content;
+              if (content) {
+                yield content;
+              }
+            } catch {
+              // Ignore parse errors for non-JSON lines
+            }
+          }
+        }
+      }
+    } else {
+      // Fallback to non-streaming for providers that don't support it
+      const response = await generateTweet(request);
+      if (response.error) {
+        throw new Error(response.error);
+      }
+      // Yield the entire result at once
+      yield response.tweet;
+    }
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error("Failed to generate tweet. Please try again.");
   }
 }

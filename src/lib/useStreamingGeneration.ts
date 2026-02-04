@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { generateTweet, type TweetGenerationRequest } from "./api";
+import { generateTweetStream, type TweetGenerationRequest } from "./api";
 
 interface UseStreamingGenerationOptions {
   onChunk?: (chunk: string) => void;
@@ -30,34 +30,23 @@ export function useStreamingGeneration({
     abortControllerRef.current = new AbortController();
 
     try {
-      // For now, we'll use the regular API and simulate streaming
-      // In the future, this could use actual SSE from the API
-      const response = await generateTweet(request);
+      let accumulatedContent = "";
 
-      if (response.error) {
-        setError(response.error);
-        onError?.(response.error);
+      // Use real streaming API
+      for await (const chunk of generateTweetStream(request)) {
+        accumulatedContent += chunk;
+        setStreamedContent(accumulatedContent);
+        onChunk?.(accumulatedContent);
+      }
+
+      // Streaming completed
+      setStreamedContent(accumulatedContent);
+      onComplete?.(accumulatedContent);
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        // User cancelled the request
         return;
       }
-
-      const tweet = response.tweet;
-
-      // Simulate streaming by adding characters one at a time
-      const streamSpeed = 20; // ms per character
-      let currentText = "";
-
-      for (let i = 0; i < tweet.length; i++) {
-        currentText += tweet[i];
-        setStreamedContent(currentText);
-        onChunk?.(currentText);
-
-        // Small delay for visual effect
-        await new Promise((resolve) => setTimeout(resolve, streamSpeed));
-      }
-
-      setStreamedContent(tweet);
-      onComplete?.(tweet);
-    } catch (err) {
       const errorMessage =
         err instanceof Error ? err.message : "Failed to generate tweet";
       setError(errorMessage);

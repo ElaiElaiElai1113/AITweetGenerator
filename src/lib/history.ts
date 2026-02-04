@@ -66,3 +66,43 @@ export function deleteFromHistory(tweetId: string): SavedTweet[] {
 export function clearHistory(): void {
   localStorage.removeItem(HISTORY_KEY);
 }
+
+// Export history as JSON file
+export function exportHistory(): void {
+  const history = getHistory();
+  const dataStr = JSON.stringify(history, null, 2);
+  const dataBlob = new Blob([dataStr], { type: "application/json" });
+  const url = URL.createObjectURL(dataBlob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `tweet-history-${new Date().toISOString().split("T")[0]}.json`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+// Import history from JSON file
+export function importHistory(file: File): void {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const imported = JSON.parse(e.target?.result as string);
+      if (Array.isArray(imported)) {
+        const currentHistory = getHistory();
+        // Merge without duplicates (by ID)
+        const existingIds = new Set(currentHistory.map((t) => t.id));
+        const newTweets = imported.filter((t: SavedTweet) => !existingIds.has(t.id));
+        const merged = [...imported, ...currentHistory.filter((t) => !imported.some((i: SavedTweet) => i.id === t.id))];
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(merged));
+        // Update favorites
+        const favorites = merged.filter((t) => t.favorite);
+        localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
+        alert(`Successfully imported ${newTweets.length} tweets.`);
+      }
+    } catch {
+      alert("Failed to import history. Please check the file format.");
+    }
+  };
+  reader.readAsText(file);
+}

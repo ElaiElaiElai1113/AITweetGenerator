@@ -1,14 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
+import { Input } from "./ui/input";
 import {
   getHistory,
   deleteFromHistory,
   toggleFavorite,
   clearHistory,
+  exportHistory,
+  importHistory,
   type SavedTweet,
 } from "@/lib/history";
-import { Trash2, Star, StarOff, X, History as HistoryIcon } from "lucide-react";
+import { Trash2, Star, StarOff, X, History as HistoryIcon, Search, Download, Upload } from "lucide-react";
 
 interface HistoryPanelProps {
   onTweetSelect: (tweet: string) => void;
@@ -23,12 +26,34 @@ export function HistoryPanel({
 }: HistoryPanelProps) {
   const [history, setHistory] = useState<SavedTweet[]>([]);
   const [filter, setFilter] = useState<"all" | "favorites">("all");
+  const [styleFilter, setStyleFilter] = useState<"all" | "viral" | "professional" | "casual" | "thread">("all");
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     if (isOpen) {
       loadHistory();
     }
-  }, [isOpen, filter]);
+  }, [isOpen, filter, styleFilter]);
+
+  const filteredHistory = useMemo(() => {
+    let result = history;
+
+    // Apply style filter
+    if (styleFilter !== "all") {
+      result = result.filter((t) => t.style === styleFilter);
+    }
+
+    // Apply search filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter((t) =>
+        t.content.toLowerCase().includes(query) ||
+        t.topic.toLowerCase().includes(query)
+      );
+    }
+
+    return result;
+  }, [history, styleFilter, searchQuery]);
 
   const loadHistory = () => {
     const allHistory = getHistory();
@@ -60,6 +85,24 @@ export function HistoryPanel({
     }
   };
 
+  const handleExport = () => {
+    exportHistory();
+  };
+
+  const handleImport = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json";
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) {
+        importHistory(file);
+        loadHistory();
+      }
+    };
+    input.click();
+  };
+
   const formatDate = (timestamp: number) => {
     const date = new Date(timestamp);
     const now = new Date();
@@ -86,7 +129,7 @@ export function HistoryPanel({
             <HistoryIcon className="w-5 h-5" />
             <h2 className="text-xl font-semibold">Tweet History</h2>
             <span className="text-sm text-muted-foreground">
-              ({history.length})
+              ({filteredHistory.length})
             </span>
           </div>
           <Button variant="ghost" size="icon" onClick={onClose}>
@@ -94,45 +137,110 @@ export function HistoryPanel({
           </Button>
         </div>
 
-        {/* Filters */}
-        <div className="flex gap-2 p-4 border-b">
-          <Button
-            variant={filter === "all" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setFilter("all")}
-          >
-            All
-          </Button>
-          <Button
-            variant={filter === "favorites" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setFilter("favorites")}
-          >
-            Favorites
-          </Button>
-          <div className="flex-1" />
-          {history.length > 0 && (
-            <Button variant="ghost" size="sm" onClick={handleClearAll}>
-              Clear All
+        {/* Search & Filters */}
+        <div className="p-4 border-b space-y-3">
+          {/* Search Bar */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Search tweets by content or topic..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+
+          {/* Filter Buttons */}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant={filter === "all" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setFilter("all")}
+            >
+              All
             </Button>
-          )}
+            <Button
+              variant={filter === "favorites" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setFilter("favorites")}
+            >
+              Favorites
+            </Button>
+
+            {/* Style Filters */}
+            <div className="w-px bg-border mx-1" />
+            <Button
+              variant={styleFilter === "all" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setStyleFilter("all")}
+            >
+              All Styles
+            </Button>
+            <Button
+              variant={styleFilter === "viral" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setStyleFilter("viral")}
+            >
+              Viral
+            </Button>
+            <Button
+              variant={styleFilter === "professional" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setStyleFilter("professional")}
+            >
+              Professional
+            </Button>
+            <Button
+              variant={styleFilter === "casual" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setStyleFilter("casual")}
+            >
+              Casual
+            </Button>
+            <Button
+              variant={styleFilter === "thread" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setStyleFilter("thread")}
+            >
+              Thread
+            </Button>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={handleExport}>
+              <Download className="w-4 h-4 mr-2" />
+              Export
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleImport}>
+              <Upload className="w-4 h-4 mr-2" />
+              Import
+            </Button>
+            <div className="flex-1" />
+            {history.length > 0 && (
+              <Button variant="ghost" size="sm" onClick={handleClearAll}>
+                Clear All
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* List */}
         <div className="flex-1 overflow-y-auto p-4">
-          {history.length === 0 ? (
+          {filteredHistory.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
               <HistoryIcon className="w-12 h-12 mb-4 opacity-50" />
-              <p className="text-lg font-medium">No tweets yet</p>
+              <p className="text-lg font-medium">No tweets found</p>
               <p className="text-sm">
-                {filter === "favorites"
+                {searchQuery ? "Try a different search term" :
+                  filter === "favorites"
                   ? "Favorite some tweets to see them here"
                   : "Generated tweets will appear here"}
               </p>
             </div>
           ) : (
             <div className="space-y-3">
-              {history.map((tweet) => (
+              {filteredHistory.map((tweet) => (
                 <Card
                   key={tweet.id}
                   className="p-4 hover:bg-accent/50 transition-colors cursor-pointer group"

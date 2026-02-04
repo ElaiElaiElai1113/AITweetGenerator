@@ -1,5 +1,6 @@
 import { getMaxLength, truncateTweet } from "./settings";
 import type { AdvancedSettings } from "./settings";
+import { fetchWithRetry } from "./fetch";
 
 export interface VisionAnalysisRequest {
   imageBase64: string;
@@ -199,7 +200,7 @@ Return only JSON matching this schema:
       const baseUrl = isDev ? "/gemini-api/v1beta/models" : config.url;
       const geminiUrl = `${baseUrl}/${config.model}:generateContent`;
 
-      response = await fetch(
+      response = await fetchWithRetry(
         geminiUrl,
         {
           method: "POST",
@@ -239,6 +240,8 @@ Return only JSON matching this schema:
               },
             },
           }),
+          maxRetries: 3,
+          initialDelay: 1000,
         }
       );
 
@@ -280,7 +283,7 @@ Return only JSON matching this schema:
     } else if (provider === "glm") {
       // GLM Vision API
       const token = await generateGLMToken(apiKey);
-      response = await fetch(config.url, {
+      response = await fetchWithRetry(config.url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -308,6 +311,8 @@ Return only JSON matching this schema:
           temperature: 0.7,
           max_tokens: 500,
         }),
+        maxRetries: 3,
+        initialDelay: 1000,
       });
 
       if (!response.ok) {
@@ -337,7 +342,7 @@ Return only JSON matching this schema:
       };
     } else {
       // OpenAI API (original implementation)
-      response = await fetch("https://api.openai.com/v1/chat/completions", {
+      response = await fetchWithRetry("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -364,6 +369,8 @@ Return only JSON matching this schema:
           ],
           max_tokens: 500,
         }),
+        maxRetries: 3,
+        initialDelay: 1000,
       });
 
       if (!response.ok) {
