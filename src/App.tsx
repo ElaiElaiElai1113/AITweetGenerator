@@ -263,6 +263,7 @@ function App() {
     try {
       // Vision-based generation when media is uploaded
       if (uploadedMedia && uploadedMedia.base64) {
+        console.log("[App] Starting vision analysis...");
         const response = await analyzeImageAndGenerateTweet({
           imageBase64: uploadedMedia.base64,
           style,
@@ -272,9 +273,13 @@ function App() {
           advancedSettings: advancedSettings,
         });
 
+        console.log("[App] Vision response received:", response);
+
         if (response.error) {
+          console.error("[App] Vision error:", response.error);
           setError(response.error);
         } else {
+          console.log("[App] Vision tweet generated:", response.tweet?.substring(0, 50) + "...");
           setGeneratedTweet(response.tweet);
           // Track analytics
           trackTweetGeneration(style, selectedTemplate?.name, uploadedMedia.file.name);

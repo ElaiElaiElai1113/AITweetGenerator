@@ -82,6 +82,87 @@ const VISION_CONFIGS = {
   },
 };
 
+// Extract the actual tweet from GLM's reasoning content
+function extractTweetFromReasoning(reasoning: string): string {
+  // GLM returns reasoning with the actual tweet embedded. We need to extract it.
+  // Common patterns:
+  // - "Tweet needs to be..." followed by the actual tweet
+  // - The tweet often contains emojis and hashtags
+  // - After the tweet, reasoning continues with phrases like "Wait, check"
+
+  // First, try to find text between common tweet indicators and stop phrases
+  const tweetStartPatterns = [
+    /(?:Tweet needs to be|Let'?s think|Maybe|For the tweet|The tweet could be|Here'?s a tweet):\s*/i,
+  ];
+
+  const stopPhrases = [
+    /\nWait,/,
+    /\nLet me count/,
+    /\nLet'?s count/,
+    /\nCheck length/,
+    /\nHmm/,
+    /\nActually/,
+  ];
+
+  // Find the earliest stop phrase position
+  let stopPos = reasoning.length;
+  for (const stopPattern of stopPhrases) {
+    const match = reasoning.match(stopPattern);
+    if (match && match.index !== undefined && match.index < stopPos) {
+      stopPos = match.index;
+    }
+  }
+
+  // Find the latest start pattern before the stop position
+  let startPos = 0;
+  for (const startPattern of tweetStartPatterns) {
+    const matches = [...reasoning.matchAll(new RegExp(startPattern.source, startPattern.flags + 'g'))];
+    for (const match of matches) {
+      if (match.index !== undefined && match.index < stopPos && match.index > startPos) {
+        startPos = match.index + match[0].length;
+      }
+    }
+  }
+
+  // Extract the potential tweet
+  let potentialTweet = reasoning.substring(startPos, stopPos).trim();
+
+  // Look for the actual tweet within the extracted text
+  // The tweet often starts after a colon or quote and ends before the next reasoning
+  const tweetMatch = potentialTweet.match(/[:\s]*["']?([A-Z][^"'\n]{30,280}#[A-Za-z]{3,}[^"'\n]*)["']?/);
+  if (tweetMatch && tweetMatch[1]) {
+    return tweetMatch[1].trim();
+  }
+
+  // Try to find text that looks like a tweet (emojis + hashtags)
+  const tweetWithEmojiMatch = potentialTweet.match(/([A-Z][^.\n]{20,280}[🐠✨🌊💕💙🎉🔥⭐][^.\n]{0,50}#[A-Za-z]+)/);
+  if (tweetWithEmojiMatch && tweetWithEmojiMatch[1]) {
+    return tweetWithEmojiMatch[1].trim();
+  }
+
+  // Look for the final complete sentence before stop phrases
+  const sentences = potentialTweet.split(/[.!?]+/).filter(s => s.trim().length > 20);
+  if (sentences.length > 0) {
+    // Try to find a sentence with hashtags or emojis
+    for (const sentence of sentences) {
+      if (sentence.includes('#') || /[🐠✨🌊💕💙]/.test(sentence)) {
+        return sentence.trim();
+      }
+    }
+    // Return the last sentence as fallback
+    const lastSentence = sentences[sentences.length - 1].trim();
+    if (lastSentence.length > 20 && lastSentence.length < 300) {
+      return lastSentence;
+    }
+  }
+
+  // Last resort: return the extracted portion (truncated if too long)
+  if (potentialTweet.length > 280) {
+    return potentialTweet.substring(0, 280).trim();
+  }
+  return potentialTweet || reasoning.slice(-280).trim();
+}
+
 function parseVisionJson(text: string): { description: string; tweet: string; location?: string } | null {
   const stripped = text
     .trim()
@@ -137,18 +218,23 @@ function detectVisionProvider(): VisionProvider {
 export async function analyzeImageAndGenerateTweet(
   request: VisionAnalysisRequest
 ): Promise<VisionAnalysisResponse> {
+  console.log("[Vision] Starting analysis with provider detection...");
   const provider = detectVisionProvider();
   const config = VISION_CONFIGS[provider];
+  console.log("[Vision] Using provider:", provider, "model:", config.model);
 
   // Check for API key
   const envKey = config.envKey;
   const apiKey = import.meta.env[envKey];
   const { advancedSettings } = request;
 
+  console.log("[Vision] API key exists:", !!apiKey);
+
   // Get max length for truncation (default to 280 if no advanced settings)
   const maxLength = advancedSettings ? getMaxLength(advancedSettings.length) : 280;
 
   if (!apiKey) {
+    console.error("[Vision] No API key found");
     return {
       description: "",
       tweet: "",
@@ -163,6 +249,10 @@ Get a free Gemini key: https://aistudio.google.com/app/apikey`,
   }
 
   const { imageBase64, style, includeHashtags, includeEmojis, customContext } = request;
+
+  console.log("[Vision] Image base64 length:", imageBase64?.length || 0);
+  console.log("[Vision] Style:", style, "Hashtags:", includeHashtags, "Emojis:", includeEmojis);
+  console.log("[Vision] Custom context:", customContext || "none");
 
   const stylePrompts = {
     viral: "viral and engaging, optimized for retweets and likes",
@@ -226,7 +316,7 @@ Return only JSON matching this schema:
             ],
             generationConfig: {
               temperature: 0.7,
-              maxOutputTokens: 500,
+              maxOutputTokens: 2000,
               responseMimeType: "application/json",
               responseSchema: {
                 type: "object",
@@ -309,7 +399,7 @@ Return only JSON matching this schema:
             },
           ],
           temperature: 0.7,
-          max_tokens: 500,
+          max_tokens: 2000,
         }),
         maxRetries: 3,
         initialDelay: 1000,
@@ -325,10 +415,63 @@ Return only JSON matching this schema:
       }
 
       data = await response.json();
-      const content = data.choices?.[0]?.message?.content || "";
+      console.log("[Vision] GLM raw response:", data);
+      console.log("[Vision] GLM response keys:", Object.keys(data));
+      console.log("[Vision] GLM full structure:", JSON.stringify(data, null, 2));
+
+      // Try different response formats from GLM
+      let content = data.choices?.[0]?.message?.content || "";
+      console.log("[Vision] Tried data.choices[0].message.content:", content?.substring(0, 50) || "EMPTY");
+
+      // Check GLM's reasoning_content field (used by GLM-4.5V for vision responses)
+      const reasoningContent = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.reasoning_content;
+      if (!content && reasoningContent) {
+        // Extract the actual tweet from the reasoning content
+        content = extractTweetFromReasoning(reasoningContent);
+        console.log("[Vision] Extracted tweet from reasoning_content:", content?.substring(0, 50) || "EMPTY");
+      }
+
+      // If the standard format doesn't work, try alternative formats
+      if (!content && data.data) {
+        content = data.data || "";
+        console.log("[Vision] Tried data.data:", content?.substring(0, 50) || "EMPTY");
+      }
+      if (!content && data.content) {
+        content = data.content || "";
+        console.log("[Vision] Tried data.content:", content?.substring(0, 50) || "EMPTY");
+      }
+      if (!content && data.message) {
+        content = data.message || "";
+        console.log("[Vision] Tried data.message:", content?.substring(0, 50) || "EMPTY");
+      }
+      if (!content && data.msg) {
+        content = data.msg || "";
+        console.log("[Vision] Tried data.msg:", content?.substring(0, 50) || "EMPTY");
+      }
+      if (!content && data.output) {
+        content = data.output || "";
+        console.log("[Vision] Tried data.output:", content?.substring(0, 50) || "EMPTY");
+      }
+      if (!content && data.text) {
+        content = data.text || "";
+        console.log("[Vision] Tried data.text:", content?.substring(0, 50) || "EMPTY");
+      }
+      if (!content && data.result) {
+        content = data.result || "";
+        console.log("[Vision] Tried data.result:", content?.substring(0, 50) || "EMPTY");
+      }
+
+      // As a last resort, stringify the whole response and use it
+      if (!content) {
+        content = JSON.stringify(data);
+        console.log("[Vision] Last resort - using full response as content");
+      }
+
+      console.log("[Vision] GLM extracted content:", content?.substring(0, 200) || "EMPTY");
 
       const parsed = parseVisionJson(content);
       if (parsed) {
+        console.log("[Vision] GLM parsed JSON:", parsed);
         return {
           description: parsed.description,
           tweet: truncateTweet(parsed.tweet, maxLength),
@@ -336,9 +479,13 @@ Return only JSON matching this schema:
         };
       }
 
+      // If JSON parsing fails, use the content directly
+      const finalTweet = content.trim();
+      console.log("[Vision] GLM using content as tweet:", finalTweet?.substring(0, 100) || "EMPTY");
+
       return {
         description: "Image analyzed successfully",
-        tweet: truncateTweet(content, maxLength),
+        tweet: finalTweet ? truncateTweet(finalTweet, maxLength) : "Unable to generate tweet from image. The API returned empty content.",
       };
     } else {
       // OpenAI API (original implementation)

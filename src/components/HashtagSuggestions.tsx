@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Hash, RefreshCw, X } from "lucide-react";
@@ -22,6 +22,12 @@ export function HashtagSuggestions({
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
 
+  const generateSuggestions = useCallback(() => {
+    const tags = generateHashtags(topic, 8);
+    setSuggestions(tags);
+    setSelectedTags(new Set());
+  }, [topic]);
+
   useEffect(() => {
     if (isOpen && topic && includeHashtags) {
       generateSuggestions();
@@ -29,22 +35,7 @@ export function HashtagSuggestions({
       setSuggestions([]);
       setSelectedTags(new Set());
     }
-  }, [isOpen, topic, includeHashtags]);
-
-  useEffect(() => {
-    if (topic && includeHashtags) {
-      generateSuggestions();
-    } else {
-      setSuggestions([]);
-      setSelectedTags(new Set());
-    }
-  }, [topic, includeHashtags]);
-
-  const generateSuggestions = () => {
-    const tags = generateHashtags(topic, 8);
-    setSuggestions(tags);
-    setSelectedTags(new Set());
-  };
+  }, [isOpen, topic, includeHashtags, generateSuggestions]);
 
   const addTag = (tag: string) => {
     if (!selectedTags.has(tag)) {

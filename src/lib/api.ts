@@ -588,42 +588,60 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
 
       const decoder = new TextDecoder();
       let buffer = "";
+      let chunksReceived = 0;
+
+      console.log("[Stream] Starting to read stream...");
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          console.log(`[Stream] Complete. Total chunks: ${chunksReceived}`);
+          break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
 
         for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6);
-            if (data === "[DONE]") continue;
+          if (line.trim().startsWith("data: ")) {
+            const data = line.slice(6).trim();
+            if (data === "[DONE]") {
+              console.log("[Stream] Received [DONE] signal");
+              continue;
+            }
 
             try {
               const parsed = JSON.parse(data);
               const content = parsed.choices?.[0]?.delta?.content;
               if (content) {
+                chunksReceived++;
+                console.log(`[Stream] Chunk ${chunksReceived}:`, content.substring(0, 30) + "...");
                 yield content;
               }
-            } catch {
-              // Ignore parse errors for non-JSON lines
+            } catch (e) {
+              console.log("[Stream] Failed to parse line:", data.substring(0, 100));
             }
           }
         }
       }
+
+      if (chunksReceived === 0) {
+        console.warn("[Stream] No content chunks received from stream");
+      }
     } else {
       // Fallback to non-streaming for providers that don't support it
+      console.log("[Stream] Provider doesn't support streaming, using fallback");
       const response = await generateTweet(request);
       if (response.error) {
         throw new Error(response.error);
       }
       // Yield the entire result at once
+      console.log("[Stream] Fallback result:", response.tweet.substring(0, 50) + "...");
       yield response.tweet;
     }
   } catch (error) {
+    console.error("[Stream] Error:", error);
     if (error instanceof Error) {
       throw error;
     }

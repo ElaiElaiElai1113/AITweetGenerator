@@ -18,6 +18,7 @@ export function useStreamingGeneration({
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const startStreaming = useCallback(async (request: TweetGenerationRequest) => {
+    console.log("[useStreamingGeneration] Starting streaming with topic:", request.topic);
     setIsStreaming(true);
     setStreamedContent("");
     setError("");
@@ -31,18 +32,26 @@ export function useStreamingGeneration({
 
     try {
       let accumulatedContent = "";
+      let chunkCount = 0;
 
       // Use real streaming API
       for await (const chunk of generateTweetStream(request)) {
+        chunkCount++;
         accumulatedContent += chunk;
         setStreamedContent(accumulatedContent);
         onChunk?.(accumulatedContent);
       }
 
+      console.log(`[useStreamingGeneration] Completed with ${chunkCount} chunks, total length: ${accumulatedContent.length}`);
+
       // Streaming completed
       setStreamedContent(accumulatedContent);
+      if (!accumulatedContent) {
+        console.error("[useStreamingGeneration] No content received!");
+      }
       onComplete?.(accumulatedContent);
     } catch (err) {
+      console.error("[useStreamingGeneration] Error:", err);
       if (err instanceof Error && err.name === "AbortError") {
         // User cancelled the request
         return;
@@ -52,6 +61,7 @@ export function useStreamingGeneration({
       setError(errorMessage);
       onError?.(errorMessage);
     } finally {
+      console.log("[useStreamingGeneration] Finally block, setting isStreaming to false");
       setIsStreaming(false);
     }
   }, [onChunk, onComplete, onError]);
