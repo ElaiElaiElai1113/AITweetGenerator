@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { Label } from "./components/ui/label";
@@ -25,6 +25,10 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { DEFAULT_SETTINGS, type AdvancedSettings } from "./lib/settings";
 import type { SettingsPreset } from "./lib/presets";
 import { type Template } from "./lib/templates";
+import { SchedulerPanel } from "./components/SchedulerPanel";
+import { HashtagSuggestions } from "./components/HashtagSuggestions";
+import { AnalyticsDashboard } from "./components/AnalyticsDashboard";
+import { trackTweetGeneration } from "./lib/analytics";
 import {
   Copy,
   RefreshCw,
@@ -42,6 +46,9 @@ import {
   Settings,
   ImageIcon,
   Edit,
+  Calendar,
+  Hash,
+  BarChart3,
 } from "lucide-react";
 import { useTheme } from "./components/theme-provider";
 
@@ -80,10 +87,22 @@ function App() {
   const [uploadedMedia, setUploadedMedia] = useState<UploadedMedia | null>(null);
   const [customContext, setCustomContext] = useState("");
 
+  // Phase 3 feature states
+  const [showScheduler, setShowScheduler] = useState(false);
+  const [showHashtags, setShowHashtags] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(false);
+
+  // Load analytics on mount and when tweets are generated
+  useEffect(() => {
+    // Analytics loaded on demand by components
+  }, []);
+
   // Streaming hook
   const { isStreaming, streamedContent, error: streamError, startStreaming, stopStreaming, reset: resetStream } = useStreamingGeneration({
     onComplete: (result) => {
       setGeneratedTweet(result);
+      // Track analytics
+      trackTweetGeneration(style, selectedTemplate?.name, topic);
       // Save to history
       const newTweet: SavedTweet = {
         id: Date.now().toString(),
@@ -174,9 +193,37 @@ function App() {
       description: "Toggle Preview",
     },
     {
+      key: "a",
+      ctrlKey: true,
+      metaKey: true,
+      action: () => setShowAnalytics(!showAnalytics),
+      description: "Toggle Analytics",
+    },
+    {
+      key: "h",
+      ctrlKey: true,
+      shiftKey: true,
+      action: () => setShowHashtags(!showHashtags),
+      description: "Toggle Hashtag Suggestions",
+    },
+    {
+      key: "d",
+      ctrlKey: true,
+      metaKey: true,
+      action: () => {
+        if (generatedTweet) {
+          setShowScheduler(true);
+        }
+      },
+      description: "Schedule Tweet",
+    },
+    {
       key: "Escape",
       action: () => {
         if (showHistory) setShowHistory(false);
+        if (showScheduler) setShowScheduler(false);
+        if (showHashtags) setShowHashtags(false);
+        if (showAnalytics) setShowAnalytics(false);
         if (batchTweets.length > 0) {
           setBatchTweets([]);
           setSelectedBatchIndex(null);
@@ -229,6 +276,8 @@ function App() {
           setError(response.error);
         } else {
           setGeneratedTweet(response.tweet);
+          // Track analytics
+          trackTweetGeneration(style, selectedTemplate?.name, uploadedMedia.file.name);
           // Save to history
           const newTweet: SavedTweet = {
             id: Date.now().toString(),
@@ -257,6 +306,8 @@ function App() {
           setBatchTweets(response.tweets);
           setGeneratedTweet(response.tweets[0]);
           setSelectedBatchIndex(0);
+          // Track analytics for batch
+          trackTweetGeneration(style, selectedTemplate?.name, topic);
           // Save all tweets to history
           response.tweets.forEach((tweet) => {
             const newTweet: SavedTweet = {
@@ -282,6 +333,8 @@ function App() {
           setError(response.error);
         } else {
           setGeneratedTweet(response.tweet);
+          // Track analytics
+          trackTweetGeneration(style, selectedTemplate?.name, topic);
           // Save to history
           const newTweet: SavedTweet = {
             id: Date.now().toString(),
@@ -367,6 +420,22 @@ function App() {
     setAdvancedSettings(preset.advancedSettings);
   };
 
+  const handleHashtagSelect = (hashtags: string) => {
+    // If there's a generated tweet, append the hashtags
+    if (generatedTweet && hashtags) {
+      const updatedTweet = generatedTweet.endsWith(" ")
+        ? generatedTweet + hashtags
+        : `${generatedTweet} ${hashtags}`;
+      setGeneratedTweet(updatedTweet);
+    }
+  };
+
+  const handleOpenScheduler = () => {
+    if (generatedTweet) {
+      setShowScheduler(true);
+    }
+  };
+
   const currentProvider = getCurrentProvider();
   const displayContent = isStreaming ? streamedContent : generatedTweet;
 
@@ -443,6 +512,31 @@ function App() {
               title="Toggle Preview (Ctrl+P)"
             >
               {showPreview ? <Eye className="h-5 w-5" /> : <EyeOff className="h-5 w-5" />}
+            </Button>
+            <Button
+              variant={showHashtags ? "default" : "ghost"}
+              size="icon"
+              onClick={() => setShowHashtags(!showHashtags)}
+              title="Hashtag Suggestions (Alt+H)"
+            >
+              <Hash className="h-5 w-5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleOpenScheduler}
+              title="Schedule Tweet (Ctrl+D)"
+              disabled={!generatedTweet}
+            >
+              <Calendar className="h-5 w-5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowAnalytics(!showAnalytics)}
+              title="Analytics (Ctrl+A)"
+            >
+              <BarChart3 className="h-5 w-5" />
             </Button>
             <Button
               variant="ghost"
@@ -663,6 +757,10 @@ function App() {
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+R</kbd> Regenerate</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+H</kbd> History</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+P</kbd> Preview</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+A</kbd> Analytics</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+Shift+H</kbd> Hashtags</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+D</kbd> Schedule</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Esc</kbd> Close</div>
                 </div>
               </CardContent>
             </Card>
@@ -924,6 +1022,32 @@ function App() {
           setSelectedBatchIndex(null);
           const words = content.split(" ").slice(0, 3).join(" ");
           setTopic(words);
+        }}
+      />
+
+      {/* Scheduler Panel Modal */}
+      <SchedulerPanel
+        isOpen={showScheduler}
+        onClose={() => setShowScheduler(false)}
+        tweetContent={generatedTweet}
+        style={style}
+        topic={selectedTemplate?.name || topic || "Scheduled Tweet"}
+      />
+
+      {/* Hashtag Suggestions Modal */}
+      <HashtagSuggestions
+        isOpen={showHashtags}
+        onClose={() => setShowHashtags(false)}
+        topic={selectedTemplate?.name || topic}
+        onHashtagsSelect={handleHashtagSelect}
+        includeHashtags={includeHashtags}
+      />
+
+      {/* Analytics Dashboard Modal */}
+      <AnalyticsDashboard
+        isOpen={showAnalytics}
+        onClose={() => {
+          setShowAnalytics(false);
         }}
       />
     </div>
