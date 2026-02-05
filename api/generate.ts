@@ -1,41 +1,5 @@
-import type { NextRequest } from '@vercel/node';
-import { NextResponse } from 'next/server';
-
-// Simple in-memory rate limiter for Edge Functions
-// In production, consider using Vercel KV or Upstash Redis for distributed rate limiting
-const rateLimitMap = new Map<string, number[]>();
-const RATE_LIMIT = {
-  limit: 20, // 20 requests
-  window: 60000, // per minute
-};
-
-function getClientIdentifier(request: NextRequest): string {
-  // Try to get a unique identifier from the request
-  const forwarded = request.headers.get('x-forwarded-for');
-  const ip = forwarded ? forwarded.split(',')[0] : request.headers.get('x-real-ip') || 'unknown';
-  return ip;
-}
-
-function checkRateLimit(clientId: string): { allowed: boolean; remaining: number; retryAfter?: number } {
-  const now = Date.now();
-  const windowStart = now - RATE_LIMIT.window;
-
-  let timestamps = rateLimitMap.get(clientId) || [];
-  timestamps = timestamps.filter(t => t > windowStart);
-
-  const allowed = timestamps.length < RATE_LIMIT.limit;
-
-  if (allowed) {
-    timestamps.push(now);
-  }
-
-  rateLimitMap.set(clientId, timestamps);
-
-  const remaining = Math.max(0, RATE_LIMIT.limit - timestamps.length);
-  const retryAfter = allowed ? undefined : (timestamps[0] + RATE_LIMIT.window - now);
-
-  return { allowed, remaining, retryAfter };
-}
+// Vercel Edge Function for tweet generation
+// Uses standard Web API types (not Next.js)
 
 interface GenerateRequest {
   topic: string;
@@ -92,6 +56,40 @@ const API_CONFIGS = {
 
 type Provider = keyof typeof API_CONFIGS;
 
+// Simple in-memory rate limiter for Edge Functions
+const rateLimitMap = new Map<string, number[]>();
+const RATE_LIMIT = {
+  limit: 20,
+  window: 60000,
+};
+
+function getClientIdentifier(request: Request): string {
+  const forwarded = request.headers.get('x-forwarded-for');
+  const ip = forwarded ? forwarded.split(',')[0] : request.headers.get('x-real-ip') || 'unknown';
+  return ip;
+}
+
+function checkRateLimit(clientId: string): { allowed: boolean; remaining: number; retryAfter?: number } {
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT.window;
+
+  let timestamps = rateLimitMap.get(clientId) || [];
+  timestamps = timestamps.filter(t => t > windowStart);
+
+  const allowed = timestamps.length < RATE_LIMIT.limit;
+
+  if (allowed) {
+    timestamps.push(now);
+  }
+
+  rateLimitMap.set(clientId, timestamps);
+
+  const remaining = Math.max(0, RATE_LIMIT.limit - timestamps.length);
+  const retryAfter = allowed ? undefined : (timestamps[0] + RATE_LIMIT.window - now);
+
+  return { allowed, remaining, retryAfter };
+}
+
 // Helper function to generate JWT token for Zhipu AI (GLM)
 async function generateGLMToken(apiKey: string): Promise<string> {
   const [id, secret] = apiKey.split('.');
@@ -147,64 +145,31 @@ function detectProvider(): Provider {
     }
   }
 
-  return 'groq'; // Default
+  return 'groq';
 }
 
-function buildPrompt(request: GenerateRequest): string {
-  const { topic, style, includeHashtags, includeEmojis, template, advancedSettings, useTemplate } = request;
+const stylePrompts = {
+  viral: 'viral and engaging, optimized for retweets and likes',
+  professional: 'professional and informative, suitable for business networking',
+  casual: 'casual and friendly, like talking to a friend',
+  thread: 'formatted as a Twitter thread with numbered parts, diving deep into the topic',
+};
 
-  let basePrompt: string;
-  if (useTemplate && template) {
-    basePrompt = `Create a tweet following this template: "${template}"
-
-Topic: ${topic}
-Style: ${style}`;
-  } else {
-    basePrompt = `Generate a ${style} tweet about: "${topic}"`;
-  }
-
-  const stylePrompts = {
-    viral: 'viral and engaging, optimized for retweets and likes',
-    professional: 'professional and informative, suitable for business networking',
-    casual: 'casual and friendly, like talking to a friend',
-    thread: 'formatted as a Twitter thread with numbered parts',
-  };
-
-  const tonePrompt = advancedSettings?.tone
-    ? `Use a ${advancedSettings.tone} tone.`
-    : '';
-
-  const lengthPrompt = advancedSettings?.length
-    ? `Keep it ${advancedSettings.length} (${advancedSettings.length === 'short' ? 'under 200' : advancedSettings.length === 'medium' ? '200-250' : '250-280'} characters).`
-    : '';
-
-  return `${basePrompt}
-
-Requirements:
-- ${lengthPrompt || 'Under 280 characters total'}
-- ${includeHashtags ? 'Include relevant hashtags at the end' : 'No hashtags'}
-- ${includeEmojis ? 'Use appropriate emojis to make it engaging' : 'No emojis'}
-- Make it ${stylePrompts[style]}
-- ${tonePrompt}
-- For threads: format as numbered tweets (1/, 2/, etc.) with each under 280 characters${advancedSettings ? '' : '\n'}${lengthPrompt}
-
-Output ONLY the tweet text, no explanations or extra commentary.`;
-}
-
-export async function POST(request: NextRequest) {
+export default async function handler(request: Request) {
   // Check rate limit
   const clientId = getClientIdentifier(request);
   const rateLimit = checkRateLimit(clientId);
 
   if (!rateLimit.allowed) {
-    return NextResponse.json(
-      {
+    return new Response(
+      JSON.stringify({
         tweet: '',
         error: `Rate limit exceeded. Please try again in ${Math.ceil((rateLimit.retryAfter || 0) / 1000)} seconds.`,
-      },
+      }),
       {
         status: 429,
         headers: {
+          'Content-Type': 'application/json',
           'X-RateLimit-Limit': RATE_LIMIT.limit.toString(),
           'X-RateLimit-Remaining': rateLimit.remaining.toString(),
           'X-RateLimit-Reset': new Date(Date.now() + (rateLimit.retryAfter || 0)).toISOString(),
@@ -220,16 +185,16 @@ export async function POST(request: NextRequest) {
 
     // Validate input
     if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
-      return NextResponse.json(
-        { tweet: '', error: 'Topic is required and must be a non-empty string' },
-        { status: 400 }
+      return new Response(
+        JSON.stringify({ tweet: '', error: 'Topic is required and must be a non-empty string' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
     if (topic.length > 500) {
-      return NextResponse.json(
-        { tweet: '', error: 'Topic must be under 500 characters' },
-        { status: 400 }
+      return new Response(
+        JSON.stringify({ tweet: '', error: 'Topic must be under 500 characters' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
@@ -238,140 +203,151 @@ export async function POST(request: NextRequest) {
     const apiKey = process.env[config.envKey];
 
     if (!apiKey) {
-      return NextResponse.json(
-        {
+      return new Response(
+        JSON.stringify({
           tweet: '',
-          error: `No API key configured. Please contact administrator.`,
-        },
-        { status: 500 }
+          error: 'No API key configured. Please contact administrator.',
+        }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
-    const prompt = buildPrompt(body);
+    // Build the prompt based on template or topic
+    let basePrompt: string;
+    if (useTemplate && template) {
+      basePrompt = `Create a tweet following this template: "${template}"
+
+Topic: ${topic}
+Style: ${style}`;
+    } else {
+      basePrompt = `Generate a ${style} tweet about: "${topic}"`;
+    }
+
+    // Add advanced settings to prompt
+    let advancedPrompt = '';
+    if (advancedSettings) {
+      const toneMap = {
+        neutral: 'Use a balanced, neutral tone.',
+        formal: 'Use a professional, business-appropriate tone.',
+        friendly: 'Use a friendly, conversational tone.',
+        witty: 'Use humor and wit in your response.',
+      };
+      const lengthMap = {
+        short: 'Keep it concise and punchy. Aim for around 100 characters.',
+        medium: 'Provide moderate detail. Aim for around 200 characters.',
+        long: 'Use the full space available. Aim for 270-280 characters.',
+      };
+      advancedPrompt = `
+Additional requirements:
+- ${toneMap[advancedSettings.tone || 'neutral']}
+- ${lengthMap[advancedSettings.length || 'medium']}`;
+    }
+
+    const prompt = `${basePrompt}
+
+Requirements:
+- Under 280 characters total
+- ${includeHashtags ? 'Include relevant hashtags at the end' : 'No hashtags'}
+- ${includeEmojis ? 'Use appropriate emojis to make it engaging' : 'No emojis'}
+- Make it ${stylePrompts[style]}
+${advancedPrompt}
+
+Output ONLY the tweet text, no explanations or extra commentary.`;
+
+    // Use custom temperature if provided, otherwise default
     const temperature = advancedSettings?.temperature ?? 0.7;
 
-    // Build request
+    let response: Response;
+    const isGemini = provider === 'gemini';
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
 
-    let requestBody: any;
+    const envKey = config.envKey;
+    const apiKeyValue = process.env[envKey]!;
 
-    if (provider === 'gemini') {
-      headers['x-goog-api-key'] = apiKey;
-      requestBody = {
-        contents: [
-          {
-            parts: [
-              {
-                text: `You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.\n\n${prompt}`,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature,
-          maxOutputTokens: 1000,
-        },
-      };
+    if (isGemini) {
+      headers['x-goog-api-key'] = apiKeyValue;
     } else if (provider === 'glm') {
-      const token = await generateGLMToken(apiKey);
+      const token = await generateGLMToken(apiKeyValue);
       headers['Authorization'] = `Bearer ${token}`;
-      requestBody = {
-        model: config.model,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.',
-          },
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-        temperature,
-        max_tokens: 1000,
-      };
     } else {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-      requestBody = {
-        model: config.model,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.',
-          },
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-        temperature,
-        max_tokens: 1000,
-      };
+      headers['Authorization'] = `Bearer ${apiKeyValue}`;
     }
 
-    // Make API call
-    const response = await fetch(
-      provider === 'gemini' ? `${config.url}/${config.model}:generateContent` : config.url,
+    response = await fetch(
+      isGemini ? `${config.url}/${config.model}:generateContent` : config.url,
       {
         method: 'POST',
         headers,
-        body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(30000), // 30 second timeout
+        body: JSON.stringify(
+          isGemini
+            ? {
+                contents: [
+                  {
+                    parts: [
+                      {
+                        text: `You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.\n\n${prompt}`,
+                      },
+                    ],
+                  },
+                ],
+                generationConfig: {
+                  temperature,
+                  maxOutputTokens: 1000,
+                },
+              }
+            : {
+                model: config.model,
+                messages: [
+                  {
+                    role: 'system',
+                    content:
+                      'You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.',
+                  },
+                  {
+                    role: 'user',
+                    content: prompt,
+                  },
+                ],
+                temperature,
+                max_tokens: 1000,
+              },
+        ),
       }
     );
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      console.error('[API] Error response:', error);
-      return NextResponse.json(
-        {
+      return new Response(
+        JSON.stringify({
           tweet: '',
           error: error.error?.message || error.message || `Failed to generate tweet using ${provider}`,
-        },
-        { status: 500 }
+        }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
     const data = await response.json();
-    let tweet = '';
+    const tweet = isGemini
+      ? data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+      : data.choices?.[0]?.message?.content || '';
 
-    if (provider === 'gemini') {
-      tweet = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    } else {
-      tweet = data.choices?.[0]?.message?.content || '';
-    }
+    // Truncate to 280 characters
+    const truncatedTweet = tweet.length > 280 ? tweet.slice(0, 277) + '...' : tweet;
 
-    if (!tweet) {
-      return NextResponse.json(
-        { tweet: '', error: 'Failed to generate tweet - empty response' },
-        { status: 500 }
-      );
-    }
-
-    // Truncate to max length
-    const maxLength = advancedSettings
-      ? (advancedSettings.length === 'short' ? 200 : advancedSettings.length === 'medium' ? 250 : 280)
-      : 280;
-
-    const truncatedTweet = tweet.trim().slice(0, maxLength);
-
-    return NextResponse.json({ tweet: truncatedTweet });
+    return new Response(
+      JSON.stringify({ tweet: truncatedTweet }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
   } catch (error) {
-    console.error('[API] Unexpected error:', error);
-    return NextResponse.json(
-      {
+    return new Response(
+      JSON.stringify({
         tweet: '',
         error: error instanceof Error ? error.message : 'Failed to generate tweet. Please try again.',
-      },
-      { status: 500 }
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
 }
-
-// Edge function config
-export const config = {
-  runtime: 'edge',
-  regions: ['iad1'], // US East
-};

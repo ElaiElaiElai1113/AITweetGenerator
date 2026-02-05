@@ -1,6 +1,3 @@
-import type { NextRequest } from '@vercel/node';
-import { NextResponse } from 'next/server';
-
 // Simple in-memory rate limiter for Edge Functions
 const visionRateLimitMap = new Map<string, number[]>();
 const VISION_RATE_LIMIT = {
@@ -8,7 +5,7 @@ const VISION_RATE_LIMIT = {
   window: 60000, // per minute
 };
 
-function getClientIdentifier(request: NextRequest): string {
+function getClientIdentifier(request: Request): string {
   const forwarded = request.headers.get('x-forwarded-for');
   const ip = forwarded ? forwarded.split(',')[0] : request.headers.get('x-real-ip') || 'unknown';
   return ip;
@@ -185,21 +182,22 @@ function detectVisionProvider(): VisionProvider {
   return 'glm'; // Default to GLM
 }
 
-export async function POST(request: NextRequest) {
+export default async function handler(request: Request) {
   // Check rate limit
   const clientId = getClientIdentifier(request);
   const rateLimit = checkVisionRateLimit(clientId);
 
   if (!rateLimit.allowed) {
-    return NextResponse.json(
-      {
+    return new Response(
+      JSON.stringify({
         description: '',
         tweet: '',
         error: `Rate limit exceeded. Please try again in ${Math.ceil((rateLimit.retryAfter || 0) / 1000)} seconds.`,
-      },
+      }),
       {
         status: 429,
         headers: {
+          'Content-Type': 'application/json',
           'X-RateLimit-Limit': VISION_RATE_LIMIT.limit.toString(),
           'X-RateLimit-Remaining': rateLimit.remaining.toString(),
           'X-RateLimit-Reset': new Date(Date.now() + (rateLimit.retryAfter || 0)).toISOString(),
@@ -215,17 +213,17 @@ export async function POST(request: NextRequest) {
 
     // Validate input
     if (!imageBase64 || typeof imageBase64 !== 'string' || imageBase64.trim().length === 0) {
-      return NextResponse.json(
-        { description: '', tweet: '', error: 'Image data is required' },
-        { status: 400 }
+      return new Response(
+        JSON.stringify({ description: '', tweet: '', error: 'Image data is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
     // Limit base64 size (approximately 5MB)
     if (imageBase64.length > 5_000_000) {
-      return NextResponse.json(
-        { description: '', tweet: '', error: 'Image size too large. Maximum 5MB.' },
-        { status: 400 }
+      return new Response(
+        JSON.stringify({ description: '', tweet: '', error: 'Image size too large. Maximum 5MB.' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
@@ -234,13 +232,13 @@ export async function POST(request: NextRequest) {
     const apiKey = process.env[config.envKey];
 
     if (!apiKey) {
-      return NextResponse.json(
-        {
+      return new Response(
+        JSON.stringify({
           description: '',
           tweet: '',
           error: 'No vision API configured. Please contact administrator.',
-        },
-        { status: 500 }
+        }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
@@ -385,13 +383,13 @@ Return only JSON matching this schema:
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      return NextResponse.json(
-        {
+      return new Response(
+        JSON.stringify({
           description: '',
           tweet: '',
           error: error.error?.message || error.message || 'Failed to analyze image',
-        },
-        { status: 500 }
+        }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
@@ -415,33 +413,33 @@ Return only JSON matching this schema:
 
     const parsed = parseVisionJson(content);
     if (parsed) {
-      return NextResponse.json({
-        description: parsed.description,
-        tweet: truncateTweet(parsed.tweet, maxLength),
-        location: parsed.location,
-      });
+      return new Response(
+        JSON.stringify({
+          description: parsed.description,
+          tweet: truncateTweet(parsed.tweet, maxLength),
+          location: parsed.location,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
     }
 
     // Fallback: use content directly
-    return NextResponse.json({
-      description: 'Image analyzed successfully',
-      tweet: truncateTweet(content.trim(), maxLength),
-    });
+    return new Response(
+      JSON.stringify({
+        description: 'Image analyzed successfully',
+        tweet: truncateTweet(content.trim(), maxLength),
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
   } catch (error) {
     console.error('[Vision API] Error:', error);
-    return NextResponse.json(
-      {
+    return new Response(
+      JSON.stringify({
         description: '',
         tweet: '',
         error: error instanceof Error ? error.message : 'Failed to analyze image. Please try again.',
-      },
-      { status: 500 }
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
 }
-
-// Edge function config
-export const config = {
-  runtime: 'edge',
-  regions: ['iad1'],
-};
