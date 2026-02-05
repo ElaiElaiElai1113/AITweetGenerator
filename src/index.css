@@ -57,3 +57,133 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer utilities {
+  /* Shimmer animation for skeleton loading */
+  @keyframes shimmer {
+    0% {
+      background-position: -1000px 0;
+    }
+    100% {
+      background-position: 1000px 0;
+    }
+  }
+
+  .animate-shimmer {
+    animation: shimmer 2s infinite linear;
+    background: linear-gradient(
+      to right,
+      transparent 0%,
+      hsl(var(--muted) / 0.5) 20%,
+      hsl(var(--muted) / 0.8) 40%,
+      hsl(var(--muted) / 0.5) 60%,
+      transparent 100%
+    );
+    background-size: 1000px 100%;
+  }
+
+  /* Fade in animation */
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.2s ease-out;
+  }
+
+  /* Slide in from top */
+  @keyframes slide-in-from-top {
+    from {
+      transform: translateY(-10px);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  .animate-slide-in {
+    animation: slide-in-from-top 0.2s ease-out;
+  }
+
+  /* Zoom in animation */
+  @keyframes zoom-in {
+    from {
+      transform: scale(0.95);
+      opacity: 0;
+    }
+    to {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+
+  .animate-zoom-in {
+    animation: zoom-in 0.15s ease-out;
+  }
+
+  /* Pulse animation */
+  @keyframes pulse-soft {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.7;
+    }
+  }
+
+  .animate-pulse-soft {
+    animation: pulse-soft 2s ease-in-out infinite;
+  }
+
+  /* Spin animation */
+  @keyframes spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .animate-spin {
+    animation: spin 1s linear infinite;
+  }
+
+  /* Bounce animation */
+  @keyframes bounce {
+    0%, 100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-5px);
+    }
+  }
+
+  .animate-bounce {
+    animation: bounce 0.5s ease-in-out;
+  }
+
+  /* Combined animations */
+  .animate-in {
+    animation-fill-mode: forwards;
+  }
+
+  .fade-in {
+    animation: fade-in 0.2s ease-out;
+  }
+
+  .fade-in-50 {
+    animation: fade-in 0.05s ease-out;
+  }
+
+  .zoom-in-50 {
+    animation: zoom-in 0.05s ease-out;
+  }
+}
