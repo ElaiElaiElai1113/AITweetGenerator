@@ -2,13 +2,15 @@ import { useState, useRef, useCallback } from "react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Upload, X, Image as ImageIcon, Video } from "lucide-react";
-import { fileToBase64, extractVideoFrame } from "@/lib/vision";
+import { fileToBase64, extractMultipleVideoFrames } from "@/lib/vision";
 
 export interface UploadedMedia {
   file: File;
   type: "image" | "video";
   preview: string;
   base64?: string;
+  images?: string[]; // Multiple frames for video
+  isVideo?: boolean; // Flag to indicate this is video content
 }
 
 interface ImageUploaderProps {
@@ -33,20 +35,24 @@ export function ImageUploader({ media, onMediaChange, loading }: ImageUploaderPr
         type: "image",
         preview,
         base64,
+        isVideo: false,
       });
     } else if (fileType.startsWith("video/")) {
-      // Handle video - extract first frame
+      // Handle video - extract multiple frames adaptively based on video length
       try {
-        const base64 = await extractVideoFrame(file);
+        const images = await extractMultipleVideoFrames(file); // Adaptive: 3-10 frames based on duration
         const preview = URL.createObjectURL(file);
+        // Use first frame as the primary base64 for backwards compatibility
         onMediaChange({
           file,
           type: "video",
           preview,
-          base64,
+          base64: images[0], // First frame as primary
+          images, // All frames
+          isVideo: true,
         });
       } catch (error) {
-        console.error("Failed to extract video frame:", error);
+        console.error("Failed to extract video frames:", error);
         alert("Failed to process video. Please try an image file.");
       }
     } else {

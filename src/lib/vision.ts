@@ -1,14 +1,17 @@
 import { getMaxLength, truncateTweet } from "./settings";
 import type { AdvancedSettings } from "./settings";
 import { fetchWithRetry } from "./fetch";
+import { visionLogger } from "./logger";
 
 export interface VisionAnalysisRequest {
   imageBase64: string;
+  images?: string[]; // Multiple frames from video
   style: "viral" | "professional" | "casual" | "thread";
   includeHashtags: boolean;
   includeEmojis: boolean;
   customContext?: string;
   advancedSettings?: AdvancedSettings;
+  isVideo?: boolean; // Flag to indicate this is from a video
 }
 
 export interface VisionAnalysisResponse {
@@ -218,23 +221,23 @@ function detectVisionProvider(): VisionProvider {
 export async function analyzeImageAndGenerateTweet(
   request: VisionAnalysisRequest
 ): Promise<VisionAnalysisResponse> {
-  console.log("[Vision] Starting analysis with provider detection...");
+  visionLogger.debug("Starting analysis with provider detection...");
   const provider = detectVisionProvider();
   const config = VISION_CONFIGS[provider];
-  console.log("[Vision] Using provider:", provider, "model:", config.model);
+  visionLogger.debug("Using provider:", provider, "model:", config.model);
 
   // Check for API key
   const envKey = config.envKey;
   const apiKey = import.meta.env[envKey];
   const { advancedSettings } = request;
 
-  console.log("[Vision] API key exists:", !!apiKey);
+  visionLogger.debug("API key exists:", !!apiKey);
 
   // Get max length for truncation (default to 280 if no advanced settings)
   const maxLength = advancedSettings ? getMaxLength(advancedSettings.length) : 280;
 
   if (!apiKey) {
-    console.error("[Vision] No API key found");
+    visionLogger.error("No API key found");
     return {
       description: "",
       tweet: "",
@@ -248,11 +251,15 @@ Get a free Gemini key: https://aistudio.google.com/app/apikey`,
     };
   }
 
-  const { imageBase64, style, includeHashtags, includeEmojis, customContext } = request;
+  const { imageBase64, style, includeHashtags, includeEmojis, customContext, images, isVideo } = request;
+  const hasMultipleFrames = images && images.length > 0;
+  const imagesToAnalyze = hasMultipleFrames ? images! : [imageBase64];
 
-  console.log("[Vision] Image base64 length:", imageBase64?.length || 0);
-  console.log("[Vision] Style:", style, "Hashtags:", includeHashtags, "Emojis:", includeEmojis);
-  console.log("[Vision] Custom context:", customContext || "none");
+  visionLogger.debug("Image base64 length:", imageBase64?.length || 0);
+  visionLogger.debug("Number of frames:", imagesToAnalyze.length);
+  visionLogger.debug("Is video:", isVideo);
+  visionLogger.debug("Style:", style, "Hashtags:", includeHashtags, "Emojis:", includeEmojis);
+  visionLogger.debug("Custom context:", customContext || "none");
 
   const stylePrompts = {
     viral: "viral and engaging, optimized for retweets and likes",
@@ -261,16 +268,23 @@ Get a free Gemini key: https://aistudio.google.com/app/apikey`,
     thread: "formatted as a Twitter thread with numbered parts",
   };
 
+  // Build prompt based on whether it's a video (multiple frames) or single image
   const prompt = customContext
     ? `Context: ${customContext}
 
-Analyze this image and generate a ${style} tweet based on what you see.`
-    : `Analyze this image and generate a ${style} tweet based on what you see.
+${isVideo
+    ? `Analyze these ${imagesToAnalyze.length} frames from a video and generate a ${style} tweet based on what you see. The frames are in chronological order, showing the progression of the video.`
+    : `Analyze this image and generate a ${style} tweet based on what you see.`
+  }`
+    : `Analyze ${isVideo
+      ? `these ${imagesToAnalyze.length} frames from a video. The frames are in chronological order, showing the progression of the video.`
+      : "this image"
+    } and generate a ${style} tweet based on what you${isVideo ? " see in the video" : " see"}.
 
 Requirements:
-- Describe what's in the image briefly
+- Describe ${isVideo ? "what's happening in the video" : "what's in the image"} briefly${isVideo ? ", including any movement, action, or changes across frames" : ""}
 - Identify the location if visible (landmarks, scenery, street signs, building names, recognizable features, etc.)
-- Create a ${style} tweet that relates to the image content
+- Create a ${style} tweet that relates to the ${isVideo ? "video content" : "image content"}
 - Include the detected location naturally in the tweet when possible (e.g., "at [Location]", "visiting [Location]", "[Location] vibes", etc.)
 - Under 280 characters for the tweet
 - ${includeHashtags ? "Include relevant hashtags" : "No hashtags"}
@@ -302,12 +316,13 @@ Return only JSON matching this schema:
             contents: [
               {
                 parts: [
-                  {
+                  // Add all images as separate inline data parts
+                  ...imagesToAnalyze.map((img) => ({
                     inlineData: {
                       mimeType: "image/jpeg",
-                      data: imageBase64,
+                      data: img,
                     },
-                  },
+                  })),
                   {
                     text: prompt,
                   },
@@ -385,12 +400,13 @@ Return only JSON matching this schema:
             {
               role: "user",
               content: [
-                {
+                // Add all images as separate image_url parts
+                ...imagesToAnalyze.map((img) => ({
                   type: "image_url",
                   image_url: {
-                    url: `data:image/jpeg;base64,${imageBase64}`,
+                    url: `data:image/jpeg;base64,${img}`,
                   },
-                },
+                })),
                 {
                   type: "text",
                   text: prompt,
@@ -415,63 +431,63 @@ Return only JSON matching this schema:
       }
 
       data = await response.json();
-      console.log("[Vision] GLM raw response:", data);
-      console.log("[Vision] GLM response keys:", Object.keys(data));
-      console.log("[Vision] GLM full structure:", JSON.stringify(data, null, 2));
+      visionLogger.debug("GLM raw response:", data);
+      visionLogger.debug("GLM response keys:", Object.keys(data));
+      visionLogger.debug("GLM full structure:", JSON.stringify(data, null, 2));
 
       // Try different response formats from GLM
       let content = data.choices?.[0]?.message?.content || "";
-      console.log("[Vision] Tried data.choices[0].message.content:", content?.substring(0, 50) || "EMPTY");
+      visionLogger.debug("Tried data.choices[0].message.content:", content?.substring(0, 50) || "EMPTY");
 
       // Check GLM's reasoning_content field (used by GLM-4.5V for vision responses)
       const reasoningContent = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.reasoning_content;
       if (!content && reasoningContent) {
         // Extract the actual tweet from the reasoning content
         content = extractTweetFromReasoning(reasoningContent);
-        console.log("[Vision] Extracted tweet from reasoning_content:", content?.substring(0, 50) || "EMPTY");
+        visionLogger.debug("Extracted tweet from reasoning_content:", content?.substring(0, 50) || "EMPTY");
       }
 
       // If the standard format doesn't work, try alternative formats
       if (!content && data.data) {
         content = data.data || "";
-        console.log("[Vision] Tried data.data:", content?.substring(0, 50) || "EMPTY");
+        visionLogger.debug("Tried data.data:", content?.substring(0, 50) || "EMPTY");
       }
       if (!content && data.content) {
         content = data.content || "";
-        console.log("[Vision] Tried data.content:", content?.substring(0, 50) || "EMPTY");
+        visionLogger.debug("Tried data.content:", content?.substring(0, 50) || "EMPTY");
       }
       if (!content && data.message) {
         content = data.message || "";
-        console.log("[Vision] Tried data.message:", content?.substring(0, 50) || "EMPTY");
+        visionLogger.debug("Tried data.message:", content?.substring(0, 50) || "EMPTY");
       }
       if (!content && data.msg) {
         content = data.msg || "";
-        console.log("[Vision] Tried data.msg:", content?.substring(0, 50) || "EMPTY");
+        visionLogger.debug("Tried data.msg:", content?.substring(0, 50) || "EMPTY");
       }
       if (!content && data.output) {
         content = data.output || "";
-        console.log("[Vision] Tried data.output:", content?.substring(0, 50) || "EMPTY");
+        visionLogger.debug("Tried data.output:", content?.substring(0, 50) || "EMPTY");
       }
       if (!content && data.text) {
         content = data.text || "";
-        console.log("[Vision] Tried data.text:", content?.substring(0, 50) || "EMPTY");
+        visionLogger.debug("Tried data.text:", content?.substring(0, 50) || "EMPTY");
       }
       if (!content && data.result) {
         content = data.result || "";
-        console.log("[Vision] Tried data.result:", content?.substring(0, 50) || "EMPTY");
+        visionLogger.debug("Tried data.result:", content?.substring(0, 50) || "EMPTY");
       }
 
       // As a last resort, stringify the whole response and use it
       if (!content) {
         content = JSON.stringify(data);
-        console.log("[Vision] Last resort - using full response as content");
+        visionLogger.debug("Last resort - using full response as content");
       }
 
-      console.log("[Vision] GLM extracted content:", content?.substring(0, 200) || "EMPTY");
+      visionLogger.debug("GLM extracted content:", content?.substring(0, 200) || "EMPTY");
 
       const parsed = parseVisionJson(content);
       if (parsed) {
-        console.log("[Vision] GLM parsed JSON:", parsed);
+        visionLogger.debug("GLM parsed JSON:", parsed);
         return {
           description: parsed.description,
           tweet: truncateTweet(parsed.tweet, maxLength),
@@ -481,7 +497,7 @@ Return only JSON matching this schema:
 
       // If JSON parsing fails, use the content directly
       const finalTweet = content.trim();
-      console.log("[Vision] GLM using content as tweet:", finalTweet?.substring(0, 100) || "EMPTY");
+      visionLogger.debug("GLM using content as tweet:", finalTweet?.substring(0, 100) || "EMPTY");
 
       return {
         description: "Image analyzed successfully",
@@ -505,16 +521,17 @@ Return only JSON matching this schema:
                   type: "text",
                   text: prompt,
                 },
-                {
+                // Add all images as separate image_url parts
+                ...imagesToAnalyze.map((img) => ({
                   type: "image_url",
                   image_url: {
-                    url: `data:image/jpeg;base64,${imageBase64}`,
+                    url: `data:image/jpeg;base64,${img}`,
                   },
-                },
+                })),
               ],
             },
           ],
-          max_tokens: 500,
+          max_tokens: hasMultipleFrames ? 2000 : 500, // More tokens for multiple frames
         }),
         maxRetries: 3,
         initialDelay: 1000,
@@ -595,34 +612,180 @@ export function fileToBase64(file: File): Promise<string> {
 export async function extractVideoFrame(file: File, time: number = 1): Promise<string> {
   return new Promise((resolve, reject) => {
     const video = document.createElement("video");
-    video.src = URL.createObjectURL(file);
-    video.currentTime = time;
+    video.preload = "metadata";
     video.muted = true;
+    video.playsInline = true;
 
-    video.addEventListener("loadeddata", () => {
-      video.play();
-    });
+    const objectUrl = URL.createObjectURL(file);
+    video.src = objectUrl;
+
+    // Set up timeout to prevent hanging
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Video extraction timeout"));
+    }, 10000); // 10 second timeout
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      try {
+        URL.revokeObjectURL(objectUrl);
+      } catch {
+        // Ignore revocation errors
+      }
+    };
+
+    video.addEventListener("loadedmetadata", () => {
+      try {
+        video.currentTime = Math.min(time, video.duration - 0.1);
+      } catch (e) {
+        cleanup();
+        reject(new Error("Failed to seek video"));
+      }
+    }, { once: true });
 
     video.addEventListener("seeked", () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext("2d");
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        const ctx = canvas.getContext("2d");
 
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const base64 = canvas.toDataURL("image/jpeg", 0.8);
-        // Remove the data URL prefix
-        const base64Data = base64.split(",")[1];
-        URL.revokeObjectURL(video.src);
-        resolve(base64Data);
-      } else {
-        reject(new Error("Failed to get canvas context"));
+        if (ctx && video.videoWidth > 0 && video.videoHeight > 0) {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const base64 = canvas.toDataURL("image/jpeg", 0.8);
+          const base64Data = base64.split(",")[1];
+          cleanup();
+          resolve(base64Data);
+        } else {
+          cleanup();
+          reject(new Error("Invalid video dimensions"));
+        }
+      } catch (e) {
+        cleanup();
+        reject(new Error("Failed to extract frame: " + (e instanceof Error ? e.message : "Unknown error")));
+      }
+    }, { once: true });
+
+    video.addEventListener("error", () => {
+      cleanup();
+      reject(new Error("Failed to load video"));
+    }, { once: true });
+  });
+}
+
+/**
+ * Calculate optimal number of frames based on video duration
+ * - 0-10 seconds: 3 frames (short)
+ * - 10-30 seconds: 5 frames (medium)
+ * - 30-60 seconds: 7 frames (long)
+ * - 60+ seconds: 10 frames (very long)
+ */
+function getFrameCountForDuration(duration: number): number {
+  if (duration <= 10) return 3;
+  if (duration <= 30) return 5;
+  if (duration <= 60) return 7;
+  return 10;
+}
+
+/**
+ * Extract multiple frames from a video file for better video understanding
+ * Extracts frames at evenly distributed timestamps throughout the video
+ * Uses adaptive frame count based on video duration (optional)
+ *
+ * @param file - Video file to extract frames from
+ * @param frameCount - Optional explicit frame count (if not provided, uses adaptive calculation)
+ */
+export async function extractMultipleVideoFrames(file: File, frameCount?: number): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
+
+    const objectUrl = URL.createObjectURL(file);
+    video.src = objectUrl;
+
+    const frames: string[] = [];
+    let currentFrameIndex = 0;
+    let targetFrameCount = frameCount || 3; // Will be calculated from duration
+
+    // Set up timeout to prevent hanging
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Video extraction timeout"));
+    }, 30000); // 30 second timeout for multiple frames
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      try {
+        URL.revokeObjectURL(objectUrl);
+      } catch {
+        // Ignore revocation errors
+      }
+    };
+
+    const extractFrame = () => {
+      if (currentFrameIndex >= targetFrameCount) {
+        cleanup();
+        resolve(frames);
+        return;
+      }
+
+      try {
+        // Calculate timestamp for this frame (evenly distributed)
+        const duration = video.duration || 1;
+        const timestamp = (duration / (targetFrameCount + 1)) * (currentFrameIndex + 1);
+        video.currentTime = Math.min(timestamp, duration - 0.1);
+      } catch (e) {
+        cleanup();
+        reject(new Error("Failed to seek video"));
+      }
+    };
+
+    video.addEventListener("loadedmetadata", () => {
+      // Calculate adaptive frame count if not explicitly provided
+      if (!frameCount) {
+        targetFrameCount = getFrameCountForDuration(video.duration || 0);
+      }
+      // Start extracting frames
+      extractFrame();
+    }, { once: true });
+
+    video.addEventListener("seeked", () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        const ctx = canvas.getContext("2d");
+
+        if (ctx && video.videoWidth > 0 && video.videoHeight > 0) {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const base64 = canvas.toDataURL("image/jpeg", 0.8);
+          const base64Data = base64.split(",")[1];
+          frames.push(base64Data);
+          currentFrameIndex++;
+
+          // Extract next frame
+          extractFrame();
+        } else {
+          cleanup();
+          reject(new Error("Invalid video dimensions"));
+        }
+      } catch (e) {
+        cleanup();
+        reject(new Error("Failed to extract frame: " + (e instanceof Error ? e.message : "Unknown error")));
       }
     });
 
     video.addEventListener("error", () => {
+      cleanup();
       reject(new Error("Failed to load video"));
-    });
+    }, { once: true });
   });
 }

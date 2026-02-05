@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { generateTweetStream, type TweetGenerationRequest } from "./api";
+import { streamLogger } from "./logger";
 
 interface UseStreamingGenerationOptions {
   onChunk?: (chunk: string) => void;
@@ -18,7 +19,7 @@ export function useStreamingGeneration({
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const startStreaming = useCallback(async (request: TweetGenerationRequest) => {
-    console.log("[useStreamingGeneration] Starting streaming with topic:", request.topic);
+    streamLogger.debug("Starting streaming with topic:", request.topic);
     setIsStreaming(true);
     setStreamedContent("");
     setError("");
@@ -42,16 +43,16 @@ export function useStreamingGeneration({
         onChunk?.(accumulatedContent);
       }
 
-      console.log(`[useStreamingGeneration] Completed with ${chunkCount} chunks, total length: ${accumulatedContent.length}`);
+      streamLogger.debug(`Completed with ${chunkCount} chunks, total length: ${accumulatedContent.length}`);
 
       // Streaming completed
       setStreamedContent(accumulatedContent);
       if (!accumulatedContent) {
-        console.error("[useStreamingGeneration] No content received!");
+        streamLogger.error("No content received!");
       }
       onComplete?.(accumulatedContent);
     } catch (err) {
-      console.error("[useStreamingGeneration] Error:", err);
+      streamLogger.error("Error:", err);
       if (err instanceof Error && err.name === "AbortError") {
         // User cancelled the request
         return;
@@ -61,7 +62,7 @@ export function useStreamingGeneration({
       setError(errorMessage);
       onError?.(errorMessage);
     } finally {
-      console.log("[useStreamingGeneration] Finally block, setting isStreaming to false");
+      streamLogger.debug("Finally block, setting isStreaming to false");
       setIsStreaming(false);
     }
   }, [onChunk, onComplete, onError]);

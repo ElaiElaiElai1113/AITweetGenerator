@@ -13,6 +13,8 @@ import {
 import { useKeyboardShortcuts } from "./lib/useKeyboardShortcuts";
 import { useStreamingGeneration } from "./lib/useStreamingGeneration";
 import { analyzeImageAndGenerateTweet } from "./lib/vision";
+import { visionLogger } from "./lib/logger";
+import { clientRateLimiter, createRateLimitError } from "./lib/rateLimit";
 import { type UploadedMedia } from "./components/ImageUploader";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { TweetPreview } from "./components/TweetPreview";
@@ -253,6 +255,18 @@ function App() {
       return;
     }
 
+    // Check rate limits based on the type of generation
+    const rateLimitCheck = uploadedMedia
+      ? clientRateLimiter.checkVisionAnalysis()
+      : batchMode
+        ? clientRateLimiter.checkBatchGeneration()
+        : clientRateLimiter.checkTweetGeneration();
+
+    if (!rateLimitCheck.allowed) {
+      setError(createRateLimitError(rateLimitCheck, uploadedMedia ? "vision analysis" : batchMode ? "batch generation" : "tweet generation"));
+      return;
+    }
+
     setLoading(true);
     setError("");
     setGeneratedTweet("");
@@ -263,9 +277,11 @@ function App() {
     try {
       // Vision-based generation when media is uploaded
       if (uploadedMedia && uploadedMedia.base64) {
-        console.log("[App] Starting vision analysis...");
+        visionLogger.debug("Starting vision analysis...");
         const response = await analyzeImageAndGenerateTweet({
           imageBase64: uploadedMedia.base64,
+          images: uploadedMedia.images, // Multiple frames for video
+          isVideo: uploadedMedia.isVideo,
           style,
           includeHashtags,
           includeEmojis,
@@ -273,13 +289,13 @@ function App() {
           advancedSettings: advancedSettings,
         });
 
-        console.log("[App] Vision response received:", response);
+        visionLogger.debug("Vision response received:", response);
 
         if (response.error) {
-          console.error("[App] Vision error:", response.error);
+          visionLogger.error("Vision error:", response.error);
           setError(response.error);
         } else {
-          console.log("[App] Vision tweet generated:", response.tweet?.substring(0, 50) + "...");
+          visionLogger.debug("Vision tweet generated:", response.tweet?.substring(0, 50) + "...");
           setGeneratedTweet(response.tweet);
           // Track analytics
           trackTweetGeneration(style, selectedTemplate?.name, uploadedMedia.file.name);
