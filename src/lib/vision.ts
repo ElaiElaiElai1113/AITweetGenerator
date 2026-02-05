@@ -331,7 +331,7 @@ Return only JSON matching this schema:
             ],
             generationConfig: {
               temperature: 0.7,
-              maxOutputTokens: 2000,
+              maxOutputTokens: 4096,
               responseMimeType: "application/json",
               responseSchema: {
                 type: "object",
@@ -415,7 +415,7 @@ Return only JSON matching this schema:
             },
           ],
           temperature: 0.7,
-          max_tokens: 2000,
+          max_tokens: 4096,
         }),
         maxRetries: 3,
         initialDelay: 1000,
@@ -531,7 +531,7 @@ Return only JSON matching this schema:
               ],
             },
           ],
-          max_tokens: hasMultipleFrames ? 2000 : 500, // More tokens for multiple frames
+          max_tokens: hasMultipleFrames ? 4096 : 1024, // More tokens for multiple frames
         }),
         maxRetries: 3,
         initialDelay: 1000,
