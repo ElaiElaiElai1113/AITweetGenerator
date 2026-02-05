@@ -12,6 +12,8 @@ import type { AdvancedSettings } from "./settings";
 import { getTonePrompt, getLengthPrompt, getMaxLength, truncateTweet } from "./settings";
 import { fetchWithRetry } from "./fetch";
 import { streamLogger } from "./logger";
+import { getMoodPrompt, type TweetMood } from "./mood";
+import { getAudiencePrompt, type AudienceType } from "./audience";
 
 // Helper function to generate JWT token for Zhipu AI (GLM)
 async function generateGLMToken(apiKey: string): Promise<string> {
@@ -112,6 +114,10 @@ export interface TweetGenerationRequest {
   template?: string; // Template prompt to use
   advancedSettings?: AdvancedSettings; // Temperature, tone, length
   useTemplate?: boolean; // Whether to use template instead of topic
+  mood?: TweetMood; // Emotional tone of the tweet
+  audience?: AudienceType; // Target audience
+  hook?: string; // Optional hook template to start with
+  personal?: boolean; // Write in first person ("I did...", "I learned...") - defaults to true
 }
 
 export interface TweetGenerationResponse {
@@ -155,6 +161,55 @@ function detectProvider(): AIProvider {
   return "groq"; // Default to Groq (free, unlimited)
 }
 
+// Few-shot examples for better tweet generation
+const fewShotExamples = {
+  viral: `Example viral tweets:
+1. "Unpopular opinion: most meetings could have been an email. Fight me in the replies. #Productivity #Work"
+2. "I've been a developer for 10 years and here's what I wish I knew earlier: Your code doesn't have to be perfect, it just has to work. Ship fast, iterate faster. 🚀 #Coding #DevLife"
+3. "I finally deleted Instagram after 5 years. My anxiety dropped 50% in one week. Best decision I made this year. 👋 #DigitalDetox #MentalHealth"
+4. "I spent $500 on a course that taught me nothing. Then I found free resources that taught me everything. Sometimes the best things in life are free. 💸 #SelfEducation #Learning"
+5. "Stop doing these 5 things that are killing your productivity:
+   • Checking email first thing
+   • Multitasking
+   • Saying yes to everything
+   • Perfectionism
+   • Working through lunch\nYour future self will thank you. 💪 #Productivity #LifeHacks"`,
+
+  professional: `Example professional tweets:
+1. "I launched my first SaaS last week. Got my first paying customer today. It took 6 months of late nights and weekends. Worth every second. 🚀 #SaaS #IndieHackers"
+2. "I made 50 cold calls yesterday. Got 3 meetings. The lesson: Most people give up way too early. Persistence beats talent. 💼 #Sales #Entrepreneurship"
+3. "I spoke at my first conference yesterday. Terrified before, exhausted after, but the messages from attendees made it all worth it. Do the thing that scares you. #PublicSpeaking #Growth"
+4. "I hired my first employee last month. Best decision for my business but also the most stressful. Here's what I learned about delegating... #Leadership #Hiring"`,
+
+  casual: `Example casual tweets:
+1. "I just spent 2 hours debugging only to find I was missing a semicolon. I've been coding for 8 years and I still do this. We're all impostors. 😅 #Programming #DevLife"
+2. "I told myself I'd wake up at 5am today. My alarm went off, I laughed, and went back to sleep. Maybe tomorrow. 😴 #MorningRoutine #Realistic"
+3. "I tried meal prepping for the first time. Made 5 meals. Ate them all in 2 days. Back to square one. 🍱 #MealPrep #Adulting"
+4. "I finally finished that book I started 6 months ago. Took me way longer than it should have but I did it. Small wins. 📚 #Reading #SmallWins"`,
+
+  thread: `Example thread tweets:
+1/ "I built a side project that hit $1K MRR in 3 months. Here's how I did it:
+
+2/ First, I found a problem I actually had. I was spending hours on manual data entry for my freelance work.
+
+3/ I built a simple automation tool. Nothing fancy, just实用. Released it for free first to get feedback.
+
+4/ The first paying customer came from a Reddit post. I spent $0 on marketing initially.
+
+5/ Key lessons: Solve real problems, talk to users, ship fast. Don't overthink it. 🚀 #IndieHackers #SaaS"
+
+Personal example thread:
+1/ "I quit my 9-5 to freelance. Here's what I learned in my first year:
+
+2/ I thought I'd have more freedom. Instead, I work more hours but they're MY hours. Trade-off I'd make again.
+
+3/ Imposter syndrome hit me hard. Some days I feel like a fraud. Other days I'm on top of the world.
+
+4/ The isolation is real. I started working from coffee shops just to be around people.
+
+5/ But I wouldn't go back. The growth, learning, and ownership are worth every uncertain moment. 🔥 #Freelance #CareerChange"`,
+};
+
 export async function generateTweet(
   request: TweetGenerationRequest,
 ): Promise<TweetGenerationResponse> {
@@ -182,7 +237,7 @@ Get a free Groq key: https://console.groq.com/keys`,
     };
   }
 
-  const { topic, style, includeHashtags, includeEmojis, template, advancedSettings, useTemplate } = request;
+  const { topic, style, includeHashtags, includeEmojis, template, advancedSettings, useTemplate, mood, audience, hook, personal = true } = request;
 
   // Build the prompt based on template or topic
   let basePrompt: string;
@@ -195,6 +250,21 @@ Style: ${style}`;
     basePrompt = `Generate a ${style} tweet about: "${topic}"`;
   }
 
+  // Add mood context if provided
+  if (mood) {
+    basePrompt += `\nMood: ${getMoodPrompt(mood)}`;
+  }
+
+  // Add audience context if provided
+  if (audience) {
+    basePrompt += `\nTarget Audience: ${getAudiencePrompt(audience)}`;
+  }
+
+  // Add hook if provided
+  if (hook) {
+    basePrompt += `\nStart with this hook: "${hook}"`;
+  }
+
   // Add advanced settings to prompt
   let advancedPrompt = "";
   if (advancedSettings) {
@@ -204,12 +274,26 @@ Additional requirements:
 - ${getLengthPrompt(advancedSettings.length)}`;
   }
 
+  // Add few-shot examples
+  const examples = fewShotExamples[style] || fewShotExamples.casual;
+
+  // Build personal vs general instructions
+  const personalInstructions = personal
+    ? `- Write in first person ("I did...", "I learned...", "I found...") - make it personal and relatable
+- Share personal experiences, mistakes, lessons learned, or achievements`
+    : `- Write in an engaging, relatable style
+- Focus on the topic at hand with valuable insights or entertainment`;
+
   const prompt = `${basePrompt}
 
+${examples}
+
 Requirements:
+- ${personalInstructions}
+- Start strong (first 2-3 characters grab attention)
 - Under 280 characters total
-- ${includeHashtags ? "Include relevant hashtags at the end" : "No hashtags"}
-- ${includeEmojis ? "Use appropriate emojis to make it engaging" : "No emojis"}
+- ${includeHashtags ? "Include 2-3 relevant hashtags at the end" : "No hashtags"}
+- ${includeEmojis ? "Use 1-2 appropriate emojis max" : "No emojis"}
 - Make it ${stylePrompts[style]}
 - For threads: format as numbered tweets (1/, 2/, etc.) with each under 280 characters
 ${advancedPrompt}
@@ -250,7 +334,7 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
                   {
                     parts: [
                       {
-                        text: `You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.\n\n${prompt}`,
+                        text: `You are a viral Twitter content creator who specializes in creating personal, relatable tweets that resonate with audiences. You write in first person, sharing real experiences and insights.\n\n${prompt}`,
                       },
                     ],
                   },
@@ -266,7 +350,9 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
                   {
                     role: "system",
                     content:
-                      "You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.",
+                      personal
+                        ? "You are a viral Twitter content creator who specializes in creating personal, relatable tweets that resonate with audiences. Write in first person ('I did...', 'I learned...', 'I found...'), sharing real experiences, mistakes, lessons learned, and achievements."
+                        : "You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences. Create valuable, entertaining content that people want to read and share.",
                   },
                   {
                     role: "user",
@@ -350,15 +436,22 @@ Get a free Groq key: https://console.groq.com/keys`,
     };
   }
 
-  const { topic, style, includeHashtags, includeEmojis } = request;
+  const { topic, style, includeHashtags, includeEmojis, personal = true } = request;
+
+  const personalInstructions = personal
+    ? `- Write in first person ("I did...", "I learned...", "I found...") - make it personal and relatable
+- Share personal experiences, mistakes, lessons learned, or achievements`
+    : `- Write in an engaging, relatable style
+- Focus on the topic at hand with valuable insights or entertainment`;
 
   const prompt = `Generate ${count} different ${style} tweets about: "${topic}"
 
 Requirements:
+- ${personalInstructions}
 - Each tweet should be unique and varied in approach
 - Under 280 characters each
-- ${includeHashtags ? "Include relevant hashtags at the end" : "No hashtags"}
-- ${includeEmojis ? "Use appropriate emojis to make it engaging" : "No emojis"}
+- ${includeHashtags ? "Include 2-3 relevant hashtags at the end" : "No hashtags"}
+- ${includeEmojis ? "Use 1-2 appropriate emojis" : "No emojis"}
 - Make each one ${stylePrompts[style]}
 - For threads: format as numbered tweets (1/, 2/, etc.) with each under 280 characters
 
@@ -486,7 +579,7 @@ export async function* generateTweetStream(
 Get a free Groq key: https://console.groq.com/keys`);
   }
 
-  const { topic, style, includeHashtags, includeEmojis, template, advancedSettings, useTemplate } = request;
+  const { topic, style, includeHashtags, includeEmojis, template, advancedSettings, useTemplate, mood, audience, hook, personal = true } = request;
 
   // Build the prompt
   let basePrompt: string;
@@ -499,6 +592,21 @@ Style: ${style}`;
     basePrompt = `Generate a ${style} tweet about: "${topic}"`;
   }
 
+  // Add mood context if provided
+  if (mood) {
+    basePrompt += `\nMood: ${getMoodPrompt(mood)}`;
+  }
+
+  // Add audience context if provided
+  if (audience) {
+    basePrompt += `\nTarget Audience: ${getAudiencePrompt(audience)}`;
+  }
+
+  // Add hook if provided
+  if (hook) {
+    basePrompt += `\nStart with this hook: "${hook}"`;
+  }
+
   // Add advanced settings to prompt
   let advancedPrompt = "";
   if (advancedSettings) {
@@ -508,12 +616,21 @@ Additional requirements:
 - ${getLengthPrompt(advancedSettings.length)}`;
   }
 
+  // Build personal vs general instructions
+  const personalInstructions = personal
+    ? `- Write in first person ("I did...", "I learned...", "I found...") - make it personal and relatable
+- Share personal experiences, mistakes, lessons learned, or achievements`
+    : `- Write in an engaging, relatable style
+- Focus on the topic at hand with valuable insights or entertainment`;
+
   const prompt = `${basePrompt}
 
 Requirements:
+- ${personalInstructions}
+- Start strong (first 2-3 characters grab attention)
 - Under 280 characters total
-- ${includeHashtags ? "Include relevant hashtags at the end" : "No hashtags"}
-- ${includeEmojis ? "Use appropriate emojis to make it engaging" : "No emojis"}
+- ${includeHashtags ? "Include 2-3 relevant hashtags at the end" : "No hashtags"}
+- ${includeEmojis ? "Use 1-2 appropriate emojis max" : "No emojis"}
 - Make it ${stylePrompts[style]}
 ${advancedPrompt}
 
@@ -556,7 +673,9 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
               {
                 role: "system",
                 content:
-                  "You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences.",
+                  personal
+                    ? "You are a viral Twitter content creator who specializes in creating personal, relatable tweets that resonate with audiences. Write in first person ('I did...', 'I learned...', 'I found...'), sharing real experiences, mistakes, lessons learned, and achievements."
+                    : "You are a viral Twitter content creator who specializes in creating engaging tweets that resonate with audiences. Create valuable, entertaining content that people want to read and share.",
               },
               {
                 role: "user",
