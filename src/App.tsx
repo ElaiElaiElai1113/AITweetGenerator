@@ -84,6 +84,7 @@ function App() {
   const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(DEFAULT_SETTINGS);
   const [useStreaming, setUseStreaming] = useState(true);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
 
   // Vision feature states
   const [uploadedMedia, setUploadedMedia] = useState<UploadedMedia | null>(null);
@@ -93,6 +94,7 @@ function App() {
   const [showScheduler, setShowScheduler] = useState(false);
   const [showHashtags, setShowHashtags] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
+  const [lastGeneratedAt, setLastGeneratedAt] = useState<Date | null>(null);
 
   // Load analytics on mount and when tweets are generated
   useEffect(() => {
@@ -116,6 +118,7 @@ function App() {
       };
       saveToHistory(newTweet);
       setCurrentTweetId(newTweet.id);
+      setLastGeneratedAt(new Date());
       setLoading(false);
     },
     onError: (err) => {
@@ -310,6 +313,7 @@ function App() {
           };
           saveToHistory(newTweet);
           setCurrentTweetId(newTweet.id);
+          setLastGeneratedAt(new Date());
         }
         setLoading(false);
         return;
@@ -341,6 +345,7 @@ function App() {
             };
             saveToHistory(newTweet);
           });
+          setLastGeneratedAt(new Date());
         }
         setLoading(false);
       } else if (useStreaming) {
@@ -367,6 +372,7 @@ function App() {
           };
           saveToHistory(newTweet);
           setCurrentTweetId(newTweet.id);
+          setLastGeneratedAt(new Date());
         }
         setLoading(false);
       }
@@ -459,6 +465,18 @@ function App() {
 
   const currentProvider = getCurrentProvider();
   const displayContent = isStreaming ? streamedContent : generatedTweet;
+  const errorMessage = error || streamError;
+  const isMissingApiKey = !!errorMessage && errorMessage.includes("No API key found");
+  const statusLine = loading || isStreaming
+    ? `Generating with ${currentProvider}`
+    : lastGeneratedAt
+    ? `Last generated at ${new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(lastGeneratedAt)}`
+    : "Ready to generate";
+  const examplePrompts = [
+    "3 underrated tips for remote developers",
+    "A quick launch update for my new SaaS",
+    "What I learned after shipping a side project in 30 days",
+  ];
 
   return (
     <ErrorBoundary>
@@ -487,82 +505,10 @@ function App() {
           </div>
           <div className="flex items-center gap-1">
             <Button
-              variant={batchMode ? "default" : "ghost"}
-              size="icon"
-              onClick={() => setBatchMode(!batchMode)}
-              title="Toggle Batch Mode (Ctrl+B)"
-            >
-              <Layers className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={useStreaming ? "default" : "ghost"}
-              size="icon"
-              onClick={() => setUseStreaming(!useStreaming)}
-              title="Toggle Streaming (Ctrl+S)"
-            >
-              <Zap className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowTemplates(!showTemplates)}
-              title="Toggle Templates (Ctrl+T)"
-            >
-              <Settings className="h-5 w-5" />
-            </Button>
-            <Button
-              variant={uploadedMedia ? "default" : "ghost"}
-              size="icon"
-              onClick={() => document.querySelector<HTMLInputElement>('input[type="file"]')?.click()}
-              title="Upload Image/Video"
-            >
-              <ImageIcon className="h-5 w-5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowHistory(!showHistory)}
-              title="History (Ctrl+H)"
-            >
-              <History className="h-5 w-5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowPreview(!showPreview)}
-              title="Toggle Preview (Ctrl+P)"
-            >
-              {showPreview ? <Eye className="h-5 w-5" /> : <EyeOff className="h-5 w-5" />}
-            </Button>
-            <Button
-              variant={showHashtags ? "default" : "ghost"}
-              size="icon"
-              onClick={() => setShowHashtags(!showHashtags)}
-              title="Hashtag Suggestions (Alt+H)"
-            >
-              <Hash className="h-5 w-5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={handleOpenScheduler}
-              title="Schedule Tweet (Ctrl+D)"
-              disabled={!generatedTweet}
-            >
-              <Calendar className="h-5 w-5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowAnalytics(!showAnalytics)}
-              title="Analytics (Ctrl+A)"
-            >
-              <BarChart3 className="h-5 w-5" />
-            </Button>
-            <Button
               variant="ghost"
               size="icon"
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              title="Toggle Theme"
             >
               {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </Button>
@@ -571,13 +517,13 @@ function App() {
       </header>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-12 max-w-7xl">
-        <div className="grid lg:grid-cols-[1fr_350px] gap-8">
+      <main className="container mx-auto px-4 py-8 max-w-7xl">
+        <div className="grid lg:grid-cols-[1fr_350px] gap-6">
           {/* Left Column - Input */}
-          <div className="space-y-8">
+          <div className="space-y-6">
             {/* Hero Section */}
-            <div className="text-center space-y-4">
-              <h2 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-primary via-purple-500 to-pink-500 bg-clip-text text-transparent">
+            <div className="text-center space-y-3">
+              <h2 className="text-3xl md:text-4xl font-bold bg-gradient-to-r from-primary via-purple-500 to-pink-500 bg-clip-text text-transparent">
                 {uploadedMedia ? (
                   <>Generate Tweet from {uploadedMedia.type === "video" ? "Video" : "Image"}</>
                 ) : selectedTemplate ? (
@@ -588,7 +534,7 @@ function App() {
                   "Create Viral Tweets with AI"
                 )}
               </h2>
-              <p className="text-muted-foreground text-lg">
+              <p className="text-muted-foreground text-base">
                 {uploadedMedia
                   ? "AI will analyze your media and create the perfect tweet"
                   : selectedTemplate
@@ -598,6 +544,109 @@ function App() {
                   : "Generate engaging tweets in seconds using multiple AI providers"}
               </p>
             </div>
+
+            {/* Quick Tools */}
+            <Card className="border-border/60 bg-muted/40">
+              <CardContent className="pt-6">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold">Quick Tools</h3>
+                  <p className="text-xs text-muted-foreground">Keep the core flow focused</p>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                  <Button
+                    variant={batchMode ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setBatchMode(!batchMode)}
+                    className="justify-start"
+                    title="Toggle Batch Mode (Ctrl+B)"
+                  >
+                    <Layers className="mr-2 h-4 w-4" />
+                    Batch Mode
+                  </Button>
+                  <Button
+                    variant={useStreaming ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setUseStreaming(!useStreaming)}
+                    className="justify-start"
+                    title="Toggle Streaming (Ctrl+S)"
+                  >
+                    <Zap className="mr-2 h-4 w-4" />
+                    Streaming
+                  </Button>
+                  <Button
+                    variant={showTemplates ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setShowTemplates(!showTemplates)}
+                    className="justify-start"
+                    title="Toggle Templates (Ctrl+T)"
+                  >
+                    <Settings className="mr-2 h-4 w-4" />
+                    Templates
+                  </Button>
+                  <Button
+                    variant={uploadedMedia ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => document.querySelector<HTMLInputElement>('input[type="file"]')?.click()}
+                    className="justify-start"
+                    title="Upload Image/Video"
+                  >
+                    <ImageIcon className="mr-2 h-4 w-4" />
+                    Upload Media
+                  </Button>
+                  <Button
+                    variant={showHistory ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setShowHistory(!showHistory)}
+                    className="justify-start"
+                    title="History (Ctrl+H)"
+                  >
+                    <History className="mr-2 h-4 w-4" />
+                    History
+                  </Button>
+                  <Button
+                    variant={showPreview ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setShowPreview(!showPreview)}
+                    className="justify-start"
+                    title="Toggle Preview (Ctrl+P)"
+                  >
+                    {showPreview ? <Eye className="mr-2 h-4 w-4" /> : <EyeOff className="mr-2 h-4 w-4" />}
+                    Preview
+                  </Button>
+                  <Button
+                    variant={showHashtags ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setShowHashtags(!showHashtags)}
+                    className="justify-start"
+                    title="Hashtag Suggestions (Alt+H)"
+                  >
+                    <Hash className="mr-2 h-4 w-4" />
+                    Hashtags
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleOpenScheduler}
+                    className="justify-start"
+                    title="Schedule Tweet (Ctrl+D)"
+                    disabled={!generatedTweet}
+                  >
+                    <Calendar className="mr-2 h-4 w-4" />
+                    Schedule
+                  </Button>
+                  <Button
+                    variant={showAnalytics ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setShowAnalytics(!showAnalytics)}
+                    className="justify-start"
+                    title="Analytics (Ctrl+A)"
+                  >
+                    <BarChart3 className="mr-2 h-4 w-4" />
+                    Analytics
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
 
             {/* Templates Panel */}
             {showTemplates && (
@@ -645,15 +694,15 @@ function App() {
                     : "Enter a topic and customize your tweet style"}
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-6">
+              <CardContent className="space-y-4">
                 {/* Topic Input */}
                 <div className="space-y-2">
-                  <Label htmlFor="topic">
-                    Topic{" "}
-                    <span className="text-xs text-muted-foreground">(Ctrl+Enter to generate)</span>
-                  </Label>
-                  <Textarea
-                    id="topic"
+                <Label htmlFor="topic">
+                  Topic{" "}
+                  <span className="text-xs text-muted-foreground">(Ctrl+Enter to generate)</span>
+                </Label>
+                <Textarea
+                  id="topic"
                     placeholder={
                       uploadedMedia
                         ? "Add context or instructions for the tweet (optional)..."
@@ -661,11 +710,25 @@ function App() {
                         ? `Add details for ${selectedTemplate.name}...`
                         : "e.g., React tips, AI development, productivity hacks..."
                     }
-                    value={topic}
-                    onChange={(e) => setTopic(e.target.value)}
-                    className="min-h-[100px] resize-none"
-                  />
+                  value={topic}
+                  onChange={(e) => setTopic(e.target.value)}
+                  className="min-h-[88px] resize-none"
+                />
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <span className="text-xs text-muted-foreground">Try:</span>
+                  {examplePrompts.map((prompt) => (
+                    <Button
+                      key={prompt}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setTopic(prompt)}
+                      className="h-7 px-2 text-xs"
+                    >
+                      {prompt}
+                    </Button>
+                  ))}
                 </div>
+              </div>
 
                 {/* Style Selection */}
                 <div className="space-y-2">
@@ -700,41 +763,61 @@ function App() {
                 )}
 
                 {/* Options */}
-                <div className="flex gap-6">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={includeHashtags}
-                      onChange={(e) => setIncludeHashtags(e.target.checked)}
-                      className="w-4 h-4 rounded border-input"
-                    />
-                    <span className="text-sm">Include Hashtags</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={includeEmojis}
-                      onChange={(e) => setIncludeEmojis(e.target.checked)}
-                      className="w-4 h-4 rounded border-input"
-                    />
-                    <span className="text-sm">Include Emojis</span>
-                  </label>
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground">Enhancements</p>
+                  <div className="flex gap-6">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={includeHashtags}
+                        onChange={(e) => setIncludeHashtags(e.target.checked)}
+                        className="w-4 h-4 rounded border-input"
+                      />
+                      <span className="text-sm">Include Hashtags</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={includeEmojis}
+                        onChange={(e) => setIncludeEmojis(e.target.checked)}
+                        className="w-4 h-4 rounded border-input"
+                      />
+                      <span className="text-sm">Include Emojis</span>
+                    </label>
+                  </div>
                 </div>
 
-                {/* Advanced Controls */}
-                <AdvancedControls
-                  settings={advancedSettings}
-                  onChange={setAdvancedSettings}
-                />
-
-                {/* Preset Selector */}
-                <PresetSelector
-                  style={style}
-                  includeHashtags={includeHashtags}
-                  includeEmojis={includeEmojis}
-                  advancedSettings={advancedSettings}
-                  onLoadPreset={handleLoadPreset}
-                />
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold">Advanced Options</h4>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowAdvancedOptions(!showAdvancedOptions)}
+                    >
+                      {showAdvancedOptions ? "Hide" : "Show"}
+                    </Button>
+                  </div>
+                  {showAdvancedOptions ? (
+                    <div className="space-y-4">
+                      <AdvancedControls
+                        settings={advancedSettings}
+                        onChange={setAdvancedSettings}
+                      />
+                      <PresetSelector
+                        style={style}
+                        includeHashtags={includeHashtags}
+                        includeEmojis={includeEmojis}
+                        advancedSettings={advancedSettings}
+                        onLoadPreset={handleLoadPreset}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Hidden to keep the flow simple. Use when you need more control.
+                    </p>
+                  )}
+                </div>
 
                 {/* Generate Button */}
                 <Button
@@ -757,19 +840,29 @@ function App() {
                 </Button>
 
                 {/* Error Message */}
-                {(error || streamError) && (
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>{statusLine}</span>
+                  {batchMode && <span>{batchCount} variations</span>}
+                </div>
+                {errorMessage && (
                   <div className="p-4 bg-destructive/10 text-destructive rounded-lg border border-destructive/20">
-                    {error || streamError}
+                    <p className="font-semibold mb-1">Generation failed</p>
+                    <p className="text-sm">{errorMessage}</p>
+                    {isMissingApiKey && (
+                      <p className="text-xs mt-2 text-destructive/80">
+                        Add a provider key to `.env` and restart the dev server.
+                      </p>
+                    )}
                   </div>
                 )}
               </CardContent>
             </Card>
 
             {/* Keyboard Shortcuts Info */}
-            <Card className="bg-muted/50 border-border/50">
+            <Card className="bg-muted/40 border-border/50">
               <CardContent className="pt-6">
                 <h3 className="font-semibold text-sm mb-3">Keyboard Shortcuts</h3>
-                <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+Enter</kbd> Generate</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+B</kbd> Batch mode</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+S</kbd> Streaming</div>
@@ -788,7 +881,7 @@ function App() {
           </div>
 
           {/* Right Column - Preview & Result */}
-          <div className="space-y-8">
+          <div className="space-y-6">
             {/* Batch Results */}
             {batchTweets.length > 0 ? (
               <BatchResults
@@ -804,7 +897,7 @@ function App() {
                 {/* Tweet Preview */}
                 {showPreview && displayContent && (
                   <div className="space-y-4">
-                    <h3 className="text-lg font-semibold">Live Preview</h3>
+                    <h3 className="text-base font-semibold">Live Preview</h3>
                     <TweetPreview content={displayContent} />
                   </div>
                 )}
@@ -965,35 +1058,20 @@ function App() {
               </>
             )}
 
-            {/* Info Card */}
-            <Card className="bg-gradient-to-br from-primary/5 to-background border-primary/10">
+            {/* Provider + Privacy */}
+            <Card className="bg-muted/40 border-border/60">
               <CardContent className="pt-6">
-                <div className="space-y-4 text-sm text-muted-foreground">
+                <div className="space-y-2 text-sm text-muted-foreground">
                   <p>
-                    <strong className="text-foreground">Powered by:</strong>{" "}
+                    <strong className="text-foreground">Provider:</strong>{" "}
                     <span className="text-primary font-mono">{currentProvider}</span>
                   </p>
                   <p>
-                    <strong className="text-foreground">Features:</strong>{" "}
-                    {batchMode ? (
-                      <>Batch generation with multiple variations</>
-                    ) : useStreaming ? (
-                      <>Real-time streaming generation, templates, advanced controls</>
-                    ) : (
-                      <>
-                        Live preview, history with favorites, keyboard shortcuts,
-                        batch mode, templates, advanced controls, streaming responses
-                      </>
-                    )}
-                  </p>
-                  <p>
                     <strong className="text-foreground">Privacy:</strong> Your API
-                    key is stored locally and never shared. All requests go directly
-                    to the AI provider's servers.
+                    key is stored locally and never shared.
                   </p>
                   <p className="text-xs">
-                    <strong className="text-foreground">Supported providers:</strong>{" "}
-                    Groq, Hugging Face, OpenAI, DeepSeek, Together AI
+                    Requests are sent directly to the provider's servers.
                   </p>
                 </div>
               </CardContent>

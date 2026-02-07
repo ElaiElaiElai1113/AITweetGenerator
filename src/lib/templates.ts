@@ -4,7 +4,7 @@ export interface Template {
   emoji: string;
   description: string;
   prompt: string;
-  category: "marketing" | "engagement" | "educational" | "news" | "personal";
+  category: "marketing" | "engagement" | "educational" | "news" | "personal" | "custom";
 }
 
 export const TEMPLATES: Template[] = [
