@@ -2,8 +2,7 @@ const CACHE_NAME = "tweet-generator-v1";
 const urlsToCache = [
   "/",
   "/manifest.json",
-  "/icon-192.png",
-  "/icon-512.png",
+  "/vite.svg",
 ];
 
 self.addEventListener("install", (event) => {

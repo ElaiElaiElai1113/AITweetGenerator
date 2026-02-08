@@ -1,0 +1,16 @@
+node_modules
+dist
+build
+.next
+coverage
+.vite
+.turbo
+.env
+.env.local
+.env.production
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+*.min.js
+*.min.css
+CHANGELOG.md

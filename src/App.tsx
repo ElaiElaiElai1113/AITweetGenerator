@@ -31,6 +31,7 @@ import { SchedulerPanel } from "./components/SchedulerPanel";
 import { HashtagSuggestions } from "./components/HashtagSuggestions";
 import { AnalyticsDashboard } from "./components/AnalyticsDashboard";
 import { trackTweetGeneration } from "./lib/analytics";
+import { safeValidateTweetRequest } from "./lib/validation";
 import {
   Copy,
   RefreshCw,
@@ -253,7 +254,24 @@ function App() {
   });
 
   const handleGenerate = async () => {
-    if (!topic.trim() && !selectedTemplate && !uploadedMedia) {
+    // Validate input before processing
+    if (!uploadedMedia) {
+      const validationResult = safeValidateTweetRequest({
+        topic,
+        style,
+        includeHashtags,
+        includeEmojis,
+        template: selectedTemplate?.prompt,
+        useTemplate: !!selectedTemplate,
+        advancedSettings: advancedSettings,
+        personal: true
+      });
+
+      if (!validationResult.success) {
+        setError(validationResult.error.issues[0].message);
+        return;
+      }
+    } else if (!topic.trim() && !selectedTemplate && !uploadedMedia) {
       setError("Please enter a topic, select a template, or upload an image");
       return;
     }

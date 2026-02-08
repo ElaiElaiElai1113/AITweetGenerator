@@ -1,0 +1,50 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "framework": "vite",
+  "env": {
+    "VITE_GROQ_API_KEY": "@groq-api-key",
+    "VITE_GLM_API_KEY": "@glm-api-key",
+    "VITE_DEEPSEEK_API_KEY": "@deepseek-api-key",
+    "VITE_OPENAI_API_KEY": "@openai-api-key",
+    "VITE_TOGETHER_API_KEY": "@together-api-key",
+    "VITE_GEMINI_API_KEY": "@gemini-api-key",
+    "VITE_HUGGINGFACE_API_KEY": "@huggingface-api-key",
+    "VITE_SENTRY_DSN": "@sentry-dsn"
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "X-XSS-Protection",
+          "value": "1; mode=block"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(), geolocation=()"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/:path*"
+    }
+  ]
+}
