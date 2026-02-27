@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { Label } from "./components/ui/label";
@@ -55,6 +55,7 @@ import {
 import { useTheme } from "./components/theme-context";
 
 function App() {
+  const IMAGE_BATCH_CONCURRENCY = 3;
   const { theme, setTheme } = useTheme();
   const [topic, setTopic] = useState("");
   const [style, setStyle] = useState<"viral" | "professional" | "casual" | "thread">("viral");
@@ -78,6 +79,17 @@ function App() {
   const [batchTweets, setBatchTweets] = useState<string[]>([]);
   const [selectedBatchIndex, setSelectedBatchIndex] = useState<number | null>(null);
   const [copiedBatchIndex, setCopiedBatchIndex] = useState<number | null>(null);
+  const [batchResultType, setBatchResultType] = useState<"options" | "images">("options");
+  const [batchLabels, setBatchLabels] = useState<string[]>([]);
+  const [imageBatchResults, setImageBatchResults] = useState<Array<{ index: number; tweet: string }>>([]);
+  const [imageBatchFailedIndices, setImageBatchFailedIndices] = useState<number[]>([]);
+  const [imageBatchProgress, setImageBatchProgress] = useState({
+    running: false,
+    completed: 0,
+    total: 0,
+    succeeded: 0,
+    failed: 0,
+  });
 
   // New feature states
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
@@ -93,6 +105,7 @@ function App() {
   const [showScheduler, setShowScheduler] = useState(false);
   const [showHashtags, setShowHashtags] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
+  const visionBatchAbortRef = useRef<AbortController | null>(null);
 
   // Load analytics on mount and when tweets are generated
   useEffect(() => {
@@ -226,11 +239,15 @@ function App() {
         if (showAnalytics) setShowAnalytics(false);
         if (batchTweets.length > 0) {
           setBatchTweets([]);
+          setBatchLabels([]);
           setSelectedBatchIndex(null);
         }
         if (isStreaming) {
           stopStreaming();
           setLoading(false);
+        }
+        if (imageBatchProgress.running) {
+          stopImageBatchGeneration();
         }
       },
       description: "Close Dialog / Clear Batch / Stop Streaming",
@@ -246,6 +263,158 @@ function App() {
     useTemplate: !!selectedTemplate,
     advancedSettings: advancedSettings,
   });
+
+  const syncImageBatchState = (results: Array<{ index: number; tweet: string }>) => {
+    const sorted = [...results].sort((a, b) => a.index - b.index);
+    setImageBatchResults(sorted);
+    setBatchTweets(sorted.map((entry) => entry.tweet));
+    setBatchLabels(sorted.map((entry) => `Image ${entry.index + 1}`));
+    if (sorted.length > 0) {
+      setGeneratedTweet(sorted[0].tweet);
+      setSelectedBatchIndex(0);
+    }
+  };
+
+  const runImageBatchGeneration = async (
+    media: UploadedMedia,
+    targetIndices?: number[],
+    existingResults: Array<{ index: number; tweet: string }> = [],
+  ) => {
+    const allImages = media.images || [];
+    const indices = targetIndices || allImages.map((_, index) => index);
+
+    if (indices.length === 0) {
+      return;
+    }
+
+    const resultsMap = new Map<number, string>(
+      existingResults.map((result) => [result.index, result.tweet]),
+    );
+    const failedIndices: number[] = [];
+    let completed = 0;
+    let succeeded = 0;
+    let failed = 0;
+    let nextTaskIndex = 0;
+
+    const controller = new AbortController();
+    visionBatchAbortRef.current = controller;
+    setImageBatchProgress({
+      running: true,
+      completed: 0,
+      total: indices.length,
+      succeeded: 0,
+      failed: 0,
+    });
+
+    const worker = async () => {
+      while (nextTaskIndex < indices.length && !controller.signal.aborted) {
+        const imageIndex = indices[nextTaskIndex];
+        nextTaskIndex++;
+        const imageBase64 = allImages[imageIndex];
+
+        if (!imageBase64) {
+          failedIndices.push(imageIndex);
+          failed++;
+          completed++;
+          setImageBatchProgress({
+            running: true,
+            completed,
+            total: indices.length,
+            succeeded,
+            failed,
+          });
+          continue;
+        }
+
+        try {
+          const response = await analyzeImageAndGenerateTweet({
+            imageBase64,
+            images: [imageBase64],
+            isVideo: false,
+            style,
+            includeHashtags,
+            includeEmojis,
+            customContext: topic || customContext || undefined,
+            advancedSettings,
+            signal: controller.signal,
+          });
+
+          if (response.error || !response.tweet?.trim()) {
+            failedIndices.push(imageIndex);
+            failed++;
+          } else {
+            const tweet = response.tweet.trim();
+            resultsMap.set(imageIndex, tweet);
+            succeeded++;
+            trackTweetGeneration(style, selectedTemplate?.name, `Image ${imageIndex + 1} of ${allImages.length}`);
+            const newTweet: SavedTweet = {
+              id: `${Date.now()}-${imageIndex}-${Math.random()}`,
+              content: tweet,
+              topic: `Image ${imageIndex + 1} of ${allImages.length}`,
+              style,
+              timestamp: Date.now(),
+              favorite: false,
+            };
+            saveToHistory(newTweet);
+          }
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") {
+            return;
+          }
+          failedIndices.push(imageIndex);
+          failed++;
+        } finally {
+          completed++;
+          setImageBatchProgress({
+            running: true,
+            completed,
+            total: indices.length,
+            succeeded,
+            failed,
+          });
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(IMAGE_BATCH_CONCURRENCY, indices.length) }, () => worker()),
+    );
+
+    const isAborted = controller.signal.aborted;
+    const mergedResults = Array.from(resultsMap.entries()).map(([index, tweet]) => ({ index, tweet }));
+    syncImageBatchState(mergedResults);
+    setImageBatchFailedIndices(failedIndices.sort((a, b) => a - b));
+    setBatchResultType("images");
+    setCurrentTweetId("");
+    setImageBatchProgress({
+      running: false,
+      completed,
+      total: indices.length,
+      succeeded,
+      failed,
+    });
+    visionBatchAbortRef.current = null;
+
+    if (isAborted) {
+      setError(`Generation cancelled. Completed ${completed} of ${indices.length} image(s).`);
+      return;
+    }
+
+    if (mergedResults.length === 0) {
+      setError("Failed to generate tweets for the uploaded images. Please try again.");
+    } else if (failedIndices.length > 0) {
+      setError(`Generated ${mergedResults.length} tweet(s). ${failedIndices.length} image(s) failed analysis.`);
+    }
+  };
+
+  const stopImageBatchGeneration = () => {
+    if (visionBatchAbortRef.current) {
+      visionBatchAbortRef.current.abort();
+      visionBatchAbortRef.current = null;
+    }
+    setImageBatchProgress((prev) => ({ ...prev, running: false }));
+    setLoading(false);
+  };
 
   const handleGenerate = async () => {
     if (!topic.trim() && !selectedTemplate && !uploadedMedia) {
@@ -266,10 +435,25 @@ function App() {
     }
 
     setLoading(true);
+    if (visionBatchAbortRef.current) {
+      visionBatchAbortRef.current.abort();
+      visionBatchAbortRef.current = null;
+    }
     setError("");
     setGeneratedTweet("");
     setBatchTweets([]);
+    setBatchLabels([]);
+    setImageBatchResults([]);
+    setImageBatchFailedIndices([]);
+    setImageBatchProgress({
+      running: false,
+      completed: 0,
+      total: 0,
+      succeeded: 0,
+      failed: 0,
+    });
     setSelectedBatchIndex(null);
+    setBatchResultType("options");
     resetStream();
 
     try {
@@ -278,7 +462,18 @@ function App() {
         const mediaLabel = uploadedMedia.files.length === 1
           ? uploadedMedia.files[0].name
           : `${uploadedMedia.files.length} images`;
+        const isMultiImageSubmission =
+          uploadedMedia.type === "image" &&
+          (uploadedMedia.images?.length || 0) > 1;
         visionLogger.debug("Starting vision analysis...");
+
+        if (isMultiImageSubmission && uploadedMedia.images) {
+          setBatchResultType("images");
+          await runImageBatchGeneration(uploadedMedia);
+          setLoading(false);
+          return;
+        }
+
         const response = await analyzeImageAndGenerateTweet({
           imageBase64: uploadedMedia.base64,
           images: uploadedMedia.images, // Multiple frames for video
@@ -311,6 +506,8 @@ function App() {
           };
           saveToHistory(newTweet);
           setCurrentTweetId(newTweet.id);
+          setBatchResultType("options");
+          setBatchLabels([]);
         }
         setLoading(false);
         return;
@@ -326,8 +523,10 @@ function App() {
           setError(response.error);
         } else if (response.tweets.length > 0) {
           setBatchTweets(response.tweets);
+          setBatchLabels([]);
           setGeneratedTweet(response.tweets[0]);
           setSelectedBatchIndex(0);
+          setBatchResultType("options");
           // Track analytics for batch
           trackTweetGeneration(style, selectedTemplate?.name, topic);
           // Save all tweets to history
@@ -401,6 +600,16 @@ function App() {
     setSelectedBatchIndex(index);
   };
 
+  const handleRetryFailedImages = async () => {
+    if (!uploadedMedia || uploadedMedia.type !== "image" || imageBatchFailedIndices.length === 0) {
+      return;
+    }
+    setLoading(true);
+    setError("");
+    await runImageBatchGeneration(uploadedMedia, imageBatchFailedIndices, imageBatchResults);
+    setLoading(false);
+  };
+
   const handleFavorite = () => {
     if (currentTweetId) {
       const updated = toggleFavorite(currentTweetId);
@@ -464,6 +673,7 @@ function App() {
 
   const currentProvider = getCurrentProvider();
   const displayContent = isStreaming ? streamedContent : generatedTweet;
+  const batchItemLabel = batchResultType === "images" ? "Image" : "Option";
 
   return (
     <ErrorBoundary>
@@ -595,7 +805,9 @@ function App() {
               </h2>
               <p className="text-muted-foreground text-lg">
                 {uploadedMedia
-                  ? "AI will analyze your media and create the perfect tweet"
+                  ? uploadedMedia.type === "image" && uploadedMedia.files.length > 1
+                    ? `AI will generate one tweet per image (${uploadedMedia.files.length} total)`
+                    : "AI will analyze your media and create the perfect tweet"
                   : selectedTemplate
                   ? selectedTemplate.description
                   : batchMode
@@ -647,7 +859,7 @@ function App() {
                     ? uploadedMedia.type === "video"
                       ? "AI will analyze your video and generate a tweet"
                       : uploadedMedia.files.length > 1
-                      ? `AI will analyze ${uploadedMedia.files.length} images and generate a tweet`
+                      ? `AI will analyze ${uploadedMedia.files.length} images and generate one tweet per image`
                       : "AI will analyze your image and generate a tweet"
                     : selectedTemplate
                     ? `Using template: ${selectedTemplate.name}`
@@ -798,16 +1010,59 @@ function App() {
 
           {/* Right Column - Preview & Result */}
           <div className="space-y-8">
+            {imageBatchProgress.running && batchTweets.length === 0 && batchResultType === "images" && (
+              <Card className="border-primary/20">
+                <CardContent className="pt-6">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm text-muted-foreground">
+                      Generating: {imageBatchProgress.completed}/{imageBatchProgress.total} images
+                    </div>
+                    <Button variant="destructive" size="sm" onClick={stopImageBatchGeneration}>
+                      Cancel Batch
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
             {/* Batch Results */}
             {batchTweets.length > 0 ? (
-              <BatchResults
-                tweets={batchTweets}
-                onSelect={handleBatchSelect}
-                selectedIndex={selectedBatchIndex}
-                onCopy={handleBatchCopy}
-                onTweet={handleTweet}
-                copiedIndex={copiedBatchIndex}
-              />
+              <div className="space-y-4">
+                {batchResultType === "images" && (
+                  <Card className="border-primary/20">
+                    <CardContent className="pt-6">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="text-sm text-muted-foreground">
+                          {imageBatchProgress.running
+                            ? `Generating: ${imageBatchProgress.completed}/${imageBatchProgress.total} images`
+                            : `Completed: ${batchTweets.length} success, ${imageBatchFailedIndices.length} failed`}
+                        </div>
+                        <div className="flex gap-2">
+                          {imageBatchFailedIndices.length > 0 && !imageBatchProgress.running && (
+                            <Button variant="outline" size="sm" onClick={handleRetryFailedImages} disabled={loading}>
+                              Retry Failed ({imageBatchFailedIndices.length})
+                            </Button>
+                          )}
+                          {imageBatchProgress.running && (
+                            <Button variant="destructive" size="sm" onClick={stopImageBatchGeneration}>
+                              Cancel Batch
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+                <BatchResults
+                  tweets={batchTweets}
+                  onSelect={handleBatchSelect}
+                  selectedIndex={selectedBatchIndex}
+                  onCopy={handleBatchCopy}
+                  onTweet={handleTweet}
+                  copiedIndex={copiedBatchIndex}
+                  itemLabel={batchItemLabel}
+                  labels={batchLabels}
+                />
+              </div>
             ) : (
               <>
                 {/* Tweet Preview */}

@@ -9,6 +9,8 @@ interface BatchResultsProps {
   onCopy: (tweet: string, index: number) => void;
   onTweet: (tweet: string) => void;
   copiedIndex: number | null;
+  itemLabel?: string;
+  labels?: string[];
 }
 
 export function BatchResults({
@@ -18,13 +20,15 @@ export function BatchResults({
   onCopy,
   onTweet,
   copiedIndex,
+  itemLabel = "Option",
+  labels,
 }: BatchResultsProps) {
   if (tweets.length === 0) return null;
 
   return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold">
-        Choose your favorite ({tweets.length} options)
+        Choose your favorite ({tweets.length} {itemLabel.toLowerCase()}s)
       </h3>
 
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -46,7 +50,7 @@ export function BatchResults({
                   {/* Option number */}
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-medium text-muted-foreground">
-                      Option {index + 1}
+                      {labels?.[index] || `${itemLabel} ${index + 1}`}
                     </span>
                     {isSelected && (
                       <Check className="w-4 h-4 text-primary" />

@@ -12,6 +12,7 @@ export interface VisionAnalysisRequest {
   customContext?: string;
   advancedSettings?: AdvancedSettings;
   isVideo?: boolean; // Flag to indicate this is from a video
+  signal?: AbortSignal;
 }
 
 export interface VisionAnalysisResponse {
@@ -251,7 +252,7 @@ Get a free Gemini key: https://aistudio.google.com/app/apikey`,
     };
   }
 
-  const { imageBase64, style, includeHashtags, includeEmojis, customContext, images, isVideo } = request;
+  const { imageBase64, style, includeHashtags, includeEmojis, customContext, images, isVideo, signal } = request;
   const hasMultipleFrames = images && images.length > 0;
   const imagesToAnalyze = hasMultipleFrames ? images! : [imageBase64];
 
@@ -348,6 +349,7 @@ Return only JSON matching this schema:
           }),
           maxRetries: 3,
           initialDelay: 1000,
+          signal,
         }
       );
 
@@ -420,6 +422,7 @@ Return only JSON matching this schema:
         }),
         maxRetries: 3,
         initialDelay: 1000,
+        signal,
       });
 
       if (!response.ok) {
@@ -536,6 +539,7 @@ Return only JSON matching this schema:
         }),
         maxRetries: 3,
         initialDelay: 1000,
+        signal,
       });
 
       if (!response.ok) {
