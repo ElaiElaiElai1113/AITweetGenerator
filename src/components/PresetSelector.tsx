@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { Label } from "./ui/label";
@@ -29,19 +29,11 @@ export function PresetSelector({
   advancedSettings,
   onLoadPreset,
 }: PresetSelectorProps) {
-  const [presets, setPresets] = useState<SettingsPreset[]>([]);
+  const [presets, setPresets] = useState<SettingsPreset[]>(() => getPresets());
   const [showSaveForm, setShowSaveForm] = useState(false);
   const [newPresetName, setNewPresetName] = useState("");
   const [newPresetDescription, setNewPresetDescription] = useState("");
   const [savedNotification, setSavedNotification] = useState(false);
-
-  useEffect(() => {
-    loadPresets();
-  }, []);
-
-  const loadPresets = () => {
-    setPresets(getPresets());
-  };
 
   const handleLoadPreset = (id: string) => {
     const settings = loadPreset(id);

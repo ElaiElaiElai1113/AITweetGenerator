@@ -4,13 +4,15 @@ import { Button } from "./ui/button";
 import { Upload, X, Image as ImageIcon, Video } from "lucide-react";
 import { fileToBase64, extractMultipleVideoFrames } from "@/lib/vision";
 
+const MAX_IMAGE_FILES = 6;
+
 export interface UploadedMedia {
-  file: File;
+  files: File[];
   type: "image" | "video";
-  preview: string;
+  previews: string[];
   base64?: string;
-  images?: string[]; // Multiple frames for video
-  isVideo?: boolean; // Flag to indicate this is video content
+  images?: string[];
+  isVideo?: boolean;
 }
 
 interface ImageUploaderProps {
@@ -19,46 +21,81 @@ interface ImageUploaderProps {
   loading?: boolean;
 }
 
+function revokePreviewUrls(previews: string[]) {
+  previews.forEach((preview) => {
+    URL.revokeObjectURL(preview);
+  });
+}
+
 export function ImageUploader({ media, onMediaChange, loading }: ImageUploaderProps) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = useCallback(async (file: File) => {
-    const fileType = file.type;
+  const setNewMedia = useCallback(
+    (nextMedia: UploadedMedia) => {
+      if (media?.previews?.length) {
+        revokePreviewUrls(media.previews);
+      }
+      onMediaChange(nextMedia);
+    },
+    [media, onMediaChange],
+  );
 
-    if (fileType.startsWith("image/")) {
-      // Handle image
-      const base64 = await fileToBase64(file);
-      const preview = URL.createObjectURL(file);
-      onMediaChange({
-        file,
-        type: "image",
-        preview,
-        base64,
-        isVideo: false,
-      });
-    } else if (fileType.startsWith("video/")) {
-      // Handle video - extract multiple frames adaptively based on video length
+  const handleFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0) {
+      return;
+    }
+
+    const videoFiles = files.filter((file) => file.type.startsWith("video/"));
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+
+    if (videoFiles.length > 0) {
+      if (files.length > 1) {
+        alert("Please upload one video at a time. For multiple submissions, upload multiple images.");
+        return;
+      }
+
+      const videoFile = videoFiles[0];
       try {
-        const images = await extractMultipleVideoFrames(file); // Adaptive: 3-10 frames based on duration
-        const preview = URL.createObjectURL(file);
-        // Use first frame as the primary base64 for backwards compatibility
-        onMediaChange({
-          file,
+        const images = await extractMultipleVideoFrames(videoFile);
+        const preview = URL.createObjectURL(videoFile);
+        setNewMedia({
+          files: [videoFile],
           type: "video",
-          preview,
-          base64: images[0], // First frame as primary
-          images, // All frames
+          previews: [preview],
+          base64: images[0],
+          images,
           isVideo: true,
         });
       } catch (error) {
         console.error("Failed to extract video frames:", error);
         alert("Failed to process video. Please try an image file.");
       }
-    } else {
-      alert("Please upload an image or video file.");
+      return;
     }
-  }, [onMediaChange]);
+
+    if (imageFiles.length === 0) {
+      alert("Please upload an image or video file.");
+      return;
+    }
+
+    const selectedImages = imageFiles.slice(0, MAX_IMAGE_FILES);
+    if (imageFiles.length > MAX_IMAGE_FILES) {
+      alert(`Only the first ${MAX_IMAGE_FILES} images will be used.`);
+    }
+
+    const base64Images = await Promise.all(selectedImages.map((file) => fileToBase64(file)));
+    const previews = selectedImages.map((file) => URL.createObjectURL(file));
+
+    setNewMedia({
+      files: selectedImages,
+      type: "image",
+      previews,
+      base64: base64Images[0],
+      images: base64Images,
+      isVideo: false,
+    });
+  }, [setNewMedia]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -66,11 +103,9 @@ export function ImageUploader({ media, onMediaChange, loading }: ImageUploaderPr
       setIsDragging(false);
 
       const files = Array.from(e.dataTransfer.files);
-      if (files.length > 0) {
-        handleFile(files[0]);
-      }
+      void handleFiles(files);
     },
-    [handleFile]
+    [handleFiles]
   );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -87,21 +122,25 @@ export function ImageUploader({ media, onMediaChange, loading }: ImageUploaderPr
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (files && files.length > 0) {
-        handleFile(files[0]);
+        void handleFiles(Array.from(files));
       }
     },
-    [handleFile]
+    [handleFiles]
   );
 
   const handleRemove = useCallback(() => {
-    if (media?.preview) {
-      URL.revokeObjectURL(media.preview);
+    if (media?.previews?.length) {
+      revokePreviewUrls(media.previews);
     }
     onMediaChange(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   }, [media, onMediaChange]);
+
+  const totalSizeMb = media
+    ? media.files.reduce((total, file) => total + file.size, 0) / 1024 / 1024
+    : 0;
 
   return (
     <div className="space-y-4">
@@ -140,7 +179,7 @@ export function ImageUploader({ media, onMediaChange, loading }: ImageUploaderPr
             </div>
             <div>
               <p className="text-sm font-medium">
-                Drag & drop an image or video here
+                Drag & drop images or a video here
               </p>
               <p className="text-xs text-muted-foreground mt-1">
                 or click to browse
@@ -148,14 +187,14 @@ export function ImageUploader({ media, onMediaChange, loading }: ImageUploaderPr
             </div>
             <div className="flex items-center gap-4 text-xs text-muted-foreground">
               <span className="flex items-center gap-1">
-                <ImageIcon className="w-4 h-4" /> JPG, PNG, WEBP
+                <ImageIcon className="w-4 h-4" /> Up to {MAX_IMAGE_FILES} images
               </span>
               <span className="flex items-center gap-1">
-                <Video className="w-4 h-4" /> MP4, MOV, WEBM
+                <Video className="w-4 h-4" /> 1 video
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              Requires Gemini or OpenAI API key for vision analysis
+              Supports JPG, PNG, WEBP, MP4, MOV, WEBM
             </p>
           </div>
           <input
@@ -163,32 +202,49 @@ export function ImageUploader({ media, onMediaChange, loading }: ImageUploaderPr
             type="file"
             className="hidden"
             accept="image/*,video/*"
+            multiple
             onChange={handleFileInput}
           />
         </Card>
       ) : (
         <Card className="overflow-hidden">
-          <div className="relative aspect-video bg-black">
-            {media.type === "image" ? (
-              <img
-                src={media.preview}
-                alt="Uploaded"
-                className="w-full h-full object-contain"
-              />
-            ) : (
+          {media.type === "video" ? (
+            <div className="relative aspect-video bg-black">
               <video
-                src={media.preview}
+                src={media.previews[0]}
                 controls
                 className="w-full h-full object-contain"
               />
-            )}
-          </div>
+            </div>
+          ) : media.previews.length === 1 ? (
+            <div className="relative aspect-video bg-black">
+              <img
+                src={media.previews[0]}
+                alt="Uploaded"
+                className="w-full h-full object-contain"
+              />
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 p-2 bg-muted/20">
+              {media.previews.map((preview, index) => (
+                <div key={preview} className="relative aspect-square bg-black/5 rounded overflow-hidden">
+                  <img
+                    src={preview}
+                    alt={`Uploaded ${index + 1}`}
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
           <div className="p-3 flex items-center justify-between bg-muted/50">
-            <span className="text-xs text-muted-foreground truncate max-w-[200px]">
-              {media.file.name}
+            <span className="text-xs text-muted-foreground truncate max-w-[220px]">
+              {media.files.length === 1
+                ? media.files[0].name
+                : `${media.files.length} images selected`}
             </span>
             <span className="text-xs text-muted-foreground">
-              {(media.file.size / 1024 / 1024).toFixed(2)} MB
+              {totalSizeMb.toFixed(2)} MB
             </span>
           </div>
         </Card>

@@ -1,13 +1,19 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
+import type { Connect, Plugin, ViteDevServer } from 'vite'
+import type { IncomingMessage, ServerResponse } from 'http'
 
 // Custom plugin to handle Gemini API proxy with colon in path
 function geminiProxyPlugin() {
+  type ProxyRequest = IncomingMessage & { url?: string; method?: string; headers: IncomingMessage['headers'] };
+  type ProxyResponse = ServerResponse<IncomingMessage>;
+  type NextFunction = Connect.NextFunction;
+
   return {
     name: 'gemini-proxy',
-    configureServer(server: any) {
-      server.middlewares.use(async (req: any, res: any, next: any) => {
+    configureServer(server: ViteDevServer) {
+      server.middlewares.use(async (req: ProxyRequest, res: ProxyResponse, next: NextFunction) => {
         if (req.url?.startsWith('/gemini-api/')) {
           // Remove the /gemini-api prefix
           const targetPath = req.url.replace('/gemini-api', '')
@@ -15,22 +21,27 @@ function geminiProxyPlugin() {
 
           try {
             // Collect request body for POST requests
-            let body: Buffer | undefined
+            let body: string | undefined
             if (req.method === 'POST') {
               const chunks: Buffer[] = []
               for await (const chunk of req) {
                 chunks.push(chunk)
               }
-              body = Buffer.concat(chunks).toString() as any
+              body = Buffer.concat(chunks).toString()
             }
+
+            const googApiKeyHeader = req.headers['x-goog-api-key']
+            const googApiKey = Array.isArray(googApiKeyHeader)
+              ? googApiKeyHeader[0]
+              : googApiKeyHeader
 
             const response = await fetch(targetUrl, {
               method: req.method,
               headers: {
                 'Content-Type': req.headers['content-type'] || 'application/json',
                 'host': 'generativelanguage.googleapis.com',
-                ...(req.headers['x-goog-api-key']
-                  ? { 'x-goog-api-key': req.headers['x-goog-api-key'] }
+                ...(googApiKey
+                  ? { 'x-goog-api-key': googApiKey }
                   : {}),
               },
               body: body,
@@ -52,7 +63,7 @@ function geminiProxyPlugin() {
         }
       })
     },
-  }
+  } satisfies Plugin
 }
 
 // https://vite.dev/config/
@@ -66,10 +77,10 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/api': {
+      '/hf-api': {
         target: 'https://api-inference.huggingface.co',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
+        rewrite: (path) => path.replace(/^\/hf-api/, ''),
         secure: true,
       },
     }

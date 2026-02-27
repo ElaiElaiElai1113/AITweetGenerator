@@ -31,7 +31,7 @@ interface ToastContextType {
 
 const ToastContext = React.createContext<ToastContextType | undefined>(undefined);
 
-export function useToast() {
+function useToast() {
   const context = React.useContext(ToastContext);
   if (!context) {
     throw new Error('useToast must be used within a ToastProvider');
@@ -75,9 +75,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   React.useEffect(() => {
+    const timeouts = toastTimeouts.current;
     return () => {
       // Cleanup all timeouts on unmount
-      toastTimeouts.current.forEach(timeout => clearTimeout(timeout));
+      timeouts.forEach(timeout => clearTimeout(timeout));
     };
   }, []);
 
@@ -223,54 +224,4 @@ function Icon({ variant }: { variant?: ToastVariant }) {
   };
 
   return icons[variant ?? 'default'] || icons.default;
-}
-
-// Helper functions for common toasts
-export const toast = {
-  success: (message: string, options?: Partial<Omit<Toast, 'id' | 'variant'>>) => {
-    const { addToast } = useToast();
-    addToast({ ...options, message, variant: 'success' });
-  },
-  error: (message: string, options?: Partial<Omit<Toast, 'id' | 'variant'>>) => {
-    const { addToast } = useToast();
-    addToast({ ...options, message, variant: 'error' });
-  },
-  warning: (message: string, options?: Partial<Omit<Toast, 'id' | 'variant'>>) => {
-    const { addToast } = useToast();
-    addToast({ ...options, message, variant: 'warning' });
-  },
-  info: (message: string, options?: Partial<Omit<Toast, 'id' | 'variant'>>) => {
-    const { addToast } = useToast();
-    addToast({ ...options, message, variant: 'info' });
-  },
-  show: (message: string, variant: ToastVariant = 'default', options?: Partial<Omit<Toast, 'id'>>) => {
-    const { addToast } = useToast();
-    addToast({ ...options, message, variant });
-  },
-};
-
-// Export a hook that returns the toast functions directly
-export function useToastActions() {
-  return {
-    success: (message: string, options?: Partial<Omit<Toast, 'id' | 'variant'>>) => {
-      const { addToast } = useToast();
-      addToast({ ...options, message, variant: 'success' });
-    },
-    error: (message: string, options?: Partial<Omit<Toast, 'id' | 'variant'>>) => {
-      const { addToast } = useToast();
-      addToast({ ...options, message, variant: 'error' });
-    },
-    warning: (message: string, options?: Partial<Omit<Toast, 'id' | 'variant'>>) => {
-      const { addToast } = useToast();
-      addToast({ ...options, message, variant: 'warning' });
-    },
-    info: (message: string, options?: Partial<Omit<Toast, 'id' | 'variant'>>) => {
-      const { addToast } = useToast();
-      addToast({ ...options, message, variant: 'info' });
-    },
-    show: (message: string, variant: ToastVariant = 'default', options?: Partial<Omit<Toast, 'id'>>) => {
-      const { addToast } = useToast();
-      addToast({ ...options, message, variant });
-    },
-  };
 }

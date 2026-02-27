@@ -36,7 +36,7 @@ export function useStreamingGeneration({
       let chunkCount = 0;
 
       // Use real streaming API
-      for await (const chunk of generateTweetStream(request)) {
+      for await (const chunk of generateTweetStream(request, { signal: abortControllerRef.current.signal })) {
         chunkCount++;
         accumulatedContent += chunk;
         setStreamedContent(accumulatedContent);

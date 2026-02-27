@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import {
@@ -26,21 +26,14 @@ export function AnalyticsDashboard({
   isOpen,
   onClose,
 }: AnalyticsDashboardProps) {
-  const [analytics, setAnalytics] = useState(getAnalytics());
-  const [dailyStats, setDailyStats] = useState(getDailyStats(7));
-  const [streak, setStreak] = useState(getUsageStreak());
-
-  useEffect(() => {
-    if (isOpen) {
-      refreshAnalytics();
-    }
-  }, [isOpen]);
+  const [, setRefreshVersion] = useState(0);
 
   const refreshAnalytics = () => {
-    setAnalytics(getAnalytics());
-    setDailyStats(getDailyStats(7));
-    setStreak(getUsageStreak());
+    setRefreshVersion((current) => current + 1);
   };
+  const analytics = getAnalytics();
+  const dailyStats = getDailyStats(7);
+  const streak = getUsageStreak();
 
   const totalLast7Days = dailyStats.reduce((sum, day) => sum + day.count, 0);
 

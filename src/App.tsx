@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { Label } from "./components/ui/label";
@@ -30,8 +30,7 @@ import { type Template } from "./lib/templates";
 import { SchedulerPanel } from "./components/SchedulerPanel";
 import { HashtagSuggestions } from "./components/HashtagSuggestions";
 import { AnalyticsDashboard } from "./components/AnalyticsDashboard";
-import { trackTweetGeneration } from "./lib/analytics";
-import { safeValidateTweetRequest } from "./lib/validation";
+import { trackTweetGeneration, trackFavorite } from "./lib/analytics";
 import {
   Copy,
   RefreshCw,
@@ -53,9 +52,10 @@ import {
   Hash,
   BarChart3,
 } from "lucide-react";
-import { useTheme } from "./components/theme-provider";
+import { useTheme } from "./components/theme-context";
 
 function App() {
+  const IMAGE_BATCH_CONCURRENCY = 3;
   const { theme, setTheme } = useTheme();
   const [topic, setTopic] = useState("");
   const [style, setStyle] = useState<"viral" | "professional" | "casual" | "thread">("viral");
@@ -79,13 +79,23 @@ function App() {
   const [batchTweets, setBatchTweets] = useState<string[]>([]);
   const [selectedBatchIndex, setSelectedBatchIndex] = useState<number | null>(null);
   const [copiedBatchIndex, setCopiedBatchIndex] = useState<number | null>(null);
+  const [batchResultType, setBatchResultType] = useState<"options" | "images">("options");
+  const [batchLabels, setBatchLabels] = useState<string[]>([]);
+  const [imageBatchResults, setImageBatchResults] = useState<Array<{ index: number; tweet: string }>>([]);
+  const [imageBatchFailedIndices, setImageBatchFailedIndices] = useState<number[]>([]);
+  const [imageBatchProgress, setImageBatchProgress] = useState({
+    running: false,
+    completed: 0,
+    total: 0,
+    succeeded: 0,
+    failed: 0,
+  });
 
   // New feature states
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
   const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(DEFAULT_SETTINGS);
   const [useStreaming, setUseStreaming] = useState(true);
   const [showTemplates, setShowTemplates] = useState(false);
-  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
 
   // Vision feature states
   const [uploadedMedia, setUploadedMedia] = useState<UploadedMedia | null>(null);
@@ -95,7 +105,7 @@ function App() {
   const [showScheduler, setShowScheduler] = useState(false);
   const [showHashtags, setShowHashtags] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
-  const [lastGeneratedAt, setLastGeneratedAt] = useState<Date | null>(null);
+  const visionBatchAbortRef = useRef<AbortController | null>(null);
 
   // Load analytics on mount and when tweets are generated
   useEffect(() => {
@@ -119,7 +129,6 @@ function App() {
       };
       saveToHistory(newTweet);
       setCurrentTweetId(newTweet.id);
-      setLastGeneratedAt(new Date());
       setLoading(false);
     },
     onError: (err) => {
@@ -150,8 +159,7 @@ function App() {
     },
     {
       key: "s",
-      ctrlKey: true,
-      metaKey: true,
+      altKey: true,
       action: () => setUseStreaming(!useStreaming),
       description: "Toggle Streaming",
     },
@@ -193,8 +201,7 @@ function App() {
     },
     {
       key: "p",
-      ctrlKey: true,
-      metaKey: true,
+      altKey: true,
       action: () => setShowPreview(!showPreview),
       description: "Toggle Preview",
     },
@@ -232,11 +239,15 @@ function App() {
         if (showAnalytics) setShowAnalytics(false);
         if (batchTweets.length > 0) {
           setBatchTweets([]);
+          setBatchLabels([]);
           setSelectedBatchIndex(null);
         }
         if (isStreaming) {
           stopStreaming();
           setLoading(false);
+        }
+        if (imageBatchProgress.running) {
+          stopImageBatchGeneration();
         }
       },
       description: "Close Dialog / Clear Batch / Stop Streaming",
@@ -253,25 +264,160 @@ function App() {
     advancedSettings: advancedSettings,
   });
 
-  const handleGenerate = async () => {
-    // Validate input before processing
-    if (!uploadedMedia) {
-      const validationResult = safeValidateTweetRequest({
-        topic,
-        style,
-        includeHashtags,
-        includeEmojis,
-        template: selectedTemplate?.prompt,
-        useTemplate: !!selectedTemplate,
-        advancedSettings: advancedSettings,
-        personal: true
-      });
+  const syncImageBatchState = (results: Array<{ index: number; tweet: string }>) => {
+    const sorted = [...results].sort((a, b) => a.index - b.index);
+    setImageBatchResults(sorted);
+    setBatchTweets(sorted.map((entry) => entry.tweet));
+    setBatchLabels(sorted.map((entry) => `Image ${entry.index + 1}`));
+    if (sorted.length > 0) {
+      setGeneratedTweet(sorted[0].tweet);
+      setSelectedBatchIndex(0);
+    }
+  };
 
-      if (!validationResult.success) {
-        setError(validationResult.error.issues[0].message);
-        return;
+  const runImageBatchGeneration = async (
+    media: UploadedMedia,
+    targetIndices?: number[],
+    existingResults: Array<{ index: number; tweet: string }> = [],
+  ) => {
+    const allImages = media.images || [];
+    const indices = targetIndices || allImages.map((_, index) => index);
+
+    if (indices.length === 0) {
+      return;
+    }
+
+    const resultsMap = new Map<number, string>(
+      existingResults.map((result) => [result.index, result.tweet]),
+    );
+    const failedIndices: number[] = [];
+    let completed = 0;
+    let succeeded = 0;
+    let failed = 0;
+    let nextTaskIndex = 0;
+
+    const controller = new AbortController();
+    visionBatchAbortRef.current = controller;
+    setImageBatchProgress({
+      running: true,
+      completed: 0,
+      total: indices.length,
+      succeeded: 0,
+      failed: 0,
+    });
+
+    const worker = async () => {
+      while (nextTaskIndex < indices.length && !controller.signal.aborted) {
+        const imageIndex = indices[nextTaskIndex];
+        nextTaskIndex++;
+        const imageBase64 = allImages[imageIndex];
+
+        if (!imageBase64) {
+          failedIndices.push(imageIndex);
+          failed++;
+          completed++;
+          setImageBatchProgress({
+            running: true,
+            completed,
+            total: indices.length,
+            succeeded,
+            failed,
+          });
+          continue;
+        }
+
+        try {
+          const response = await analyzeImageAndGenerateTweet({
+            imageBase64,
+            images: [imageBase64],
+            isVideo: false,
+            style,
+            includeHashtags,
+            includeEmojis,
+            customContext: topic || customContext || undefined,
+            advancedSettings,
+            signal: controller.signal,
+          });
+
+          if (response.error || !response.tweet?.trim()) {
+            failedIndices.push(imageIndex);
+            failed++;
+          } else {
+            const tweet = response.tweet.trim();
+            resultsMap.set(imageIndex, tweet);
+            succeeded++;
+            trackTweetGeneration(style, selectedTemplate?.name, `Image ${imageIndex + 1} of ${allImages.length}`);
+            const newTweet: SavedTweet = {
+              id: `${Date.now()}-${imageIndex}-${Math.random()}`,
+              content: tweet,
+              topic: `Image ${imageIndex + 1} of ${allImages.length}`,
+              style,
+              timestamp: Date.now(),
+              favorite: false,
+            };
+            saveToHistory(newTweet);
+          }
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") {
+            return;
+          }
+          failedIndices.push(imageIndex);
+          failed++;
+        } finally {
+          completed++;
+          setImageBatchProgress({
+            running: true,
+            completed,
+            total: indices.length,
+            succeeded,
+            failed,
+          });
+        }
       }
-    } else if (!topic.trim() && !selectedTemplate && !uploadedMedia) {
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(IMAGE_BATCH_CONCURRENCY, indices.length) }, () => worker()),
+    );
+
+    const isAborted = controller.signal.aborted;
+    const mergedResults = Array.from(resultsMap.entries()).map(([index, tweet]) => ({ index, tweet }));
+    syncImageBatchState(mergedResults);
+    setImageBatchFailedIndices(failedIndices.sort((a, b) => a - b));
+    setBatchResultType("images");
+    setCurrentTweetId("");
+    setImageBatchProgress({
+      running: false,
+      completed,
+      total: indices.length,
+      succeeded,
+      failed,
+    });
+    visionBatchAbortRef.current = null;
+
+    if (isAborted) {
+      setError(`Generation cancelled. Completed ${completed} of ${indices.length} image(s).`);
+      return;
+    }
+
+    if (mergedResults.length === 0) {
+      setError("Failed to generate tweets for the uploaded images. Please try again.");
+    } else if (failedIndices.length > 0) {
+      setError(`Generated ${mergedResults.length} tweet(s). ${failedIndices.length} image(s) failed analysis.`);
+    }
+  };
+
+  const stopImageBatchGeneration = () => {
+    if (visionBatchAbortRef.current) {
+      visionBatchAbortRef.current.abort();
+      visionBatchAbortRef.current = null;
+    }
+    setImageBatchProgress((prev) => ({ ...prev, running: false }));
+    setLoading(false);
+  };
+
+  const handleGenerate = async () => {
+    if (!topic.trim() && !selectedTemplate && !uploadedMedia) {
       setError("Please enter a topic, select a template, or upload an image");
       return;
     }
@@ -289,16 +435,45 @@ function App() {
     }
 
     setLoading(true);
+    if (visionBatchAbortRef.current) {
+      visionBatchAbortRef.current.abort();
+      visionBatchAbortRef.current = null;
+    }
     setError("");
     setGeneratedTweet("");
     setBatchTweets([]);
+    setBatchLabels([]);
+    setImageBatchResults([]);
+    setImageBatchFailedIndices([]);
+    setImageBatchProgress({
+      running: false,
+      completed: 0,
+      total: 0,
+      succeeded: 0,
+      failed: 0,
+    });
     setSelectedBatchIndex(null);
+    setBatchResultType("options");
     resetStream();
 
     try {
       // Vision-based generation when media is uploaded
       if (uploadedMedia && uploadedMedia.base64) {
+        const mediaLabel = uploadedMedia.files.length === 1
+          ? uploadedMedia.files[0].name
+          : `${uploadedMedia.files.length} images`;
+        const isMultiImageSubmission =
+          uploadedMedia.type === "image" &&
+          (uploadedMedia.images?.length || 0) > 1;
         visionLogger.debug("Starting vision analysis...");
+
+        if (isMultiImageSubmission && uploadedMedia.images) {
+          setBatchResultType("images");
+          await runImageBatchGeneration(uploadedMedia);
+          setLoading(false);
+          return;
+        }
+
         const response = await analyzeImageAndGenerateTweet({
           imageBase64: uploadedMedia.base64,
           images: uploadedMedia.images, // Multiple frames for video
@@ -319,19 +494,20 @@ function App() {
           visionLogger.debug("Vision tweet generated:", response.tweet?.substring(0, 50) + "...");
           setGeneratedTweet(response.tweet);
           // Track analytics
-          trackTweetGeneration(style, selectedTemplate?.name, uploadedMedia.file.name);
+          trackTweetGeneration(style, selectedTemplate?.name, mediaLabel);
           // Save to history
           const newTweet: SavedTweet = {
             id: Date.now().toString(),
             content: response.tweet,
-            topic: uploadedMedia.file.name,
+            topic: mediaLabel,
             style,
             timestamp: Date.now(),
             favorite: false,
           };
           saveToHistory(newTweet);
           setCurrentTweetId(newTweet.id);
-          setLastGeneratedAt(new Date());
+          setBatchResultType("options");
+          setBatchLabels([]);
         }
         setLoading(false);
         return;
@@ -347,8 +523,10 @@ function App() {
           setError(response.error);
         } else if (response.tweets.length > 0) {
           setBatchTweets(response.tweets);
+          setBatchLabels([]);
           setGeneratedTweet(response.tweets[0]);
           setSelectedBatchIndex(0);
+          setBatchResultType("options");
           // Track analytics for batch
           trackTweetGeneration(style, selectedTemplate?.name, topic);
           // Save all tweets to history
@@ -363,7 +541,6 @@ function App() {
             };
             saveToHistory(newTweet);
           });
-          setLastGeneratedAt(new Date());
         }
         setLoading(false);
       } else if (useStreaming) {
@@ -390,11 +567,10 @@ function App() {
           };
           saveToHistory(newTweet);
           setCurrentTweetId(newTweet.id);
-          setLastGeneratedAt(new Date());
         }
         setLoading(false);
       }
-    } catch (err) {
+    } catch {
       setError("Failed to generate tweet. Please try again.");
       setLoading(false);
     }
@@ -424,9 +600,23 @@ function App() {
     setSelectedBatchIndex(index);
   };
 
+  const handleRetryFailedImages = async () => {
+    if (!uploadedMedia || uploadedMedia.type !== "image" || imageBatchFailedIndices.length === 0) {
+      return;
+    }
+    setLoading(true);
+    setError("");
+    await runImageBatchGeneration(uploadedMedia, imageBatchFailedIndices, imageBatchResults);
+    setLoading(false);
+  };
+
   const handleFavorite = () => {
     if (currentTweetId) {
-      toggleFavorite(currentTweetId);
+      const updated = toggleFavorite(currentTweetId);
+      const toggledTweet = updated.find((tweet) => tweet.id === currentTweetId);
+      if (toggledTweet) {
+        trackFavorite(toggledTweet.favorite);
+      }
     }
   };
 
@@ -483,18 +673,7 @@ function App() {
 
   const currentProvider = getCurrentProvider();
   const displayContent = isStreaming ? streamedContent : generatedTweet;
-  const errorMessage = error || streamError;
-  const isMissingApiKey = !!errorMessage && errorMessage.includes("No API key found");
-  const statusLine = loading || isStreaming
-    ? `Generating with ${currentProvider}`
-    : lastGeneratedAt
-    ? `Last generated at ${new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(lastGeneratedAt)}`
-    : "Ready to generate";
-  const examplePrompts = [
-    "3 underrated tips for remote developers",
-    "A quick launch update for my new SaaS",
-    "What I learned after shipping a side project in 30 days",
-  ];
+  const batchItemLabel = batchResultType === "images" ? "Image" : "Option";
 
   return (
     <ErrorBoundary>
@@ -523,10 +702,82 @@ function App() {
           </div>
           <div className="flex items-center gap-1">
             <Button
+              variant={batchMode ? "default" : "ghost"}
+              size="icon"
+              onClick={() => setBatchMode(!batchMode)}
+              title="Toggle Batch Mode (Ctrl+B)"
+            >
+              <Layers className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={useStreaming ? "default" : "ghost"}
+              size="icon"
+              onClick={() => setUseStreaming(!useStreaming)}
+              title="Toggle Streaming (Alt+S)"
+            >
+              <Zap className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowTemplates(!showTemplates)}
+              title="Toggle Templates (Ctrl+T)"
+            >
+              <Settings className="h-5 w-5" />
+            </Button>
+            <Button
+              variant={uploadedMedia ? "default" : "ghost"}
+              size="icon"
+              onClick={() => document.querySelector<HTMLInputElement>('input[type="file"]')?.click()}
+              title="Upload Image/Video"
+            >
+              <ImageIcon className="h-5 w-5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowHistory(!showHistory)}
+              title="History (Ctrl+H)"
+            >
+              <History className="h-5 w-5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowPreview(!showPreview)}
+              title="Toggle Preview (Alt+P)"
+            >
+              {showPreview ? <Eye className="h-5 w-5" /> : <EyeOff className="h-5 w-5" />}
+            </Button>
+            <Button
+              variant={showHashtags ? "default" : "ghost"}
+              size="icon"
+              onClick={() => setShowHashtags(!showHashtags)}
+              title="Hashtag Suggestions (Ctrl+Shift+H)"
+            >
+              <Hash className="h-5 w-5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleOpenScheduler}
+              title="Schedule Tweet (Ctrl+D)"
+              disabled={!generatedTweet}
+            >
+              <Calendar className="h-5 w-5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowAnalytics(!showAnalytics)}
+              title="Analytics (Ctrl+A)"
+            >
+              <BarChart3 className="h-5 w-5" />
+            </Button>
+            <Button
               variant="ghost"
               size="icon"
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-              title="Toggle Theme"
             >
               {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </Button>
@@ -535,15 +786,15 @@ function App() {
       </header>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-8 max-w-7xl">
-        <div className="grid lg:grid-cols-[1fr_350px] gap-6">
+      <main className="container mx-auto px-4 py-12 max-w-7xl">
+        <div className="grid lg:grid-cols-[1fr_350px] gap-8">
           {/* Left Column - Input */}
-          <div className="space-y-6">
+          <div className="space-y-8">
             {/* Hero Section */}
-            <div className="text-center space-y-3">
-              <h2 className="text-3xl md:text-4xl font-bold bg-gradient-to-r from-primary via-purple-500 to-pink-500 bg-clip-text text-transparent">
+            <div className="text-center space-y-4">
+              <h2 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-primary via-purple-500 to-pink-500 bg-clip-text text-transparent">
                 {uploadedMedia ? (
-                  <>Generate Tweet from {uploadedMedia.type === "video" ? "Video" : "Image"}</>
+                  <>Generate Tweet from {uploadedMedia.type === "video" ? "Video" : uploadedMedia.files.length > 1 ? "Images" : "Image"}</>
                 ) : selectedTemplate ? (
                   <>Create {selectedTemplate.name} Tweets</>
                 ) : batchMode ? (
@@ -552,9 +803,11 @@ function App() {
                   "Create Viral Tweets with AI"
                 )}
               </h2>
-              <p className="text-muted-foreground text-base">
+              <p className="text-muted-foreground text-lg">
                 {uploadedMedia
-                  ? "AI will analyze your media and create the perfect tweet"
+                  ? uploadedMedia.type === "image" && uploadedMedia.files.length > 1
+                    ? `AI will generate one tweet per image (${uploadedMedia.files.length} total)`
+                    : "AI will analyze your media and create the perfect tweet"
                   : selectedTemplate
                   ? selectedTemplate.description
                   : batchMode
@@ -562,109 +815,6 @@ function App() {
                   : "Generate engaging tweets in seconds using multiple AI providers"}
               </p>
             </div>
-
-            {/* Quick Tools */}
-            <Card className="border-border/60 bg-muted/40">
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-semibold">Quick Tools</h3>
-                  <p className="text-xs text-muted-foreground">Keep the core flow focused</p>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-                  <Button
-                    variant={batchMode ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setBatchMode(!batchMode)}
-                    className="justify-start"
-                    title="Toggle Batch Mode (Ctrl+B)"
-                  >
-                    <Layers className="mr-2 h-4 w-4" />
-                    Batch Mode
-                  </Button>
-                  <Button
-                    variant={useStreaming ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setUseStreaming(!useStreaming)}
-                    className="justify-start"
-                    title="Toggle Streaming (Ctrl+S)"
-                  >
-                    <Zap className="mr-2 h-4 w-4" />
-                    Streaming
-                  </Button>
-                  <Button
-                    variant={showTemplates ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setShowTemplates(!showTemplates)}
-                    className="justify-start"
-                    title="Toggle Templates (Ctrl+T)"
-                  >
-                    <Settings className="mr-2 h-4 w-4" />
-                    Templates
-                  </Button>
-                  <Button
-                    variant={uploadedMedia ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => document.querySelector<HTMLInputElement>('input[type="file"]')?.click()}
-                    className="justify-start"
-                    title="Upload Image/Video"
-                  >
-                    <ImageIcon className="mr-2 h-4 w-4" />
-                    Upload Media
-                  </Button>
-                  <Button
-                    variant={showHistory ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setShowHistory(!showHistory)}
-                    className="justify-start"
-                    title="History (Ctrl+H)"
-                  >
-                    <History className="mr-2 h-4 w-4" />
-                    History
-                  </Button>
-                  <Button
-                    variant={showPreview ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setShowPreview(!showPreview)}
-                    className="justify-start"
-                    title="Toggle Preview (Ctrl+P)"
-                  >
-                    {showPreview ? <Eye className="mr-2 h-4 w-4" /> : <EyeOff className="mr-2 h-4 w-4" />}
-                    Preview
-                  </Button>
-                  <Button
-                    variant={showHashtags ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setShowHashtags(!showHashtags)}
-                    className="justify-start"
-                    title="Hashtag Suggestions (Alt+H)"
-                  >
-                    <Hash className="mr-2 h-4 w-4" />
-                    Hashtags
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleOpenScheduler}
-                    className="justify-start"
-                    title="Schedule Tweet (Ctrl+D)"
-                    disabled={!generatedTweet}
-                  >
-                    <Calendar className="mr-2 h-4 w-4" />
-                    Schedule
-                  </Button>
-                  <Button
-                    variant={showAnalytics ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setShowAnalytics(!showAnalytics)}
-                    className="justify-start"
-                    title="Analytics (Ctrl+A)"
-                  >
-                    <BarChart3 className="mr-2 h-4 w-4" />
-                    Analytics
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
 
             {/* Templates Panel */}
             {showTemplates && (
@@ -706,21 +856,25 @@ function App() {
                 <CardTitle>Generate Your Tweet{batchMode ? "s" : ""}</CardTitle>
                 <CardDescription>
                   {uploadedMedia
-                    ? "AI will analyze your image/video and generate a tweet"
+                    ? uploadedMedia.type === "video"
+                      ? "AI will analyze your video and generate a tweet"
+                      : uploadedMedia.files.length > 1
+                      ? `AI will analyze ${uploadedMedia.files.length} images and generate one tweet per image`
+                      : "AI will analyze your image and generate a tweet"
                     : selectedTemplate
                     ? `Using template: ${selectedTemplate.name}`
                     : "Enter a topic and customize your tweet style"}
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-6">
                 {/* Topic Input */}
                 <div className="space-y-2">
-                <Label htmlFor="topic">
-                  Topic{" "}
-                  <span className="text-xs text-muted-foreground">(Ctrl+Enter to generate)</span>
-                </Label>
-                <Textarea
-                  id="topic"
+                  <Label htmlFor="topic">
+                    Topic{" "}
+                    <span className="text-xs text-muted-foreground">(Ctrl+Enter to generate)</span>
+                  </Label>
+                  <Textarea
+                    id="topic"
                     placeholder={
                       uploadedMedia
                         ? "Add context or instructions for the tweet (optional)..."
@@ -728,25 +882,11 @@ function App() {
                         ? `Add details for ${selectedTemplate.name}...`
                         : "e.g., React tips, AI development, productivity hacks..."
                     }
-                  value={topic}
-                  onChange={(e) => setTopic(e.target.value)}
-                  className="min-h-[88px] resize-none"
-                />
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <span className="text-xs text-muted-foreground">Try:</span>
-                  {examplePrompts.map((prompt) => (
-                    <Button
-                      key={prompt}
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setTopic(prompt)}
-                      className="h-7 px-2 text-xs"
-                    >
-                      {prompt}
-                    </Button>
-                  ))}
+                    value={topic}
+                    onChange={(e) => setTopic(e.target.value)}
+                    className="min-h-[100px] resize-none"
+                  />
                 </div>
-              </div>
 
                 {/* Style Selection */}
                 <div className="space-y-2">
@@ -754,7 +894,7 @@ function App() {
                   <Select
                     id="style"
                     value={style}
-                    onChange={(e) => setStyle(e.target.value as any)}
+                    onChange={(e) => setStyle(e.target.value as "viral" | "professional" | "casual" | "thread")}
                   >
                     <option value="viral">🚀 Viral & Engaging</option>
                     <option value="professional">💼 Professional</option>
@@ -781,61 +921,41 @@ function App() {
                 )}
 
                 {/* Options */}
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground">Enhancements</p>
-                  <div className="flex gap-6">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={includeHashtags}
-                        onChange={(e) => setIncludeHashtags(e.target.checked)}
-                        className="w-4 h-4 rounded border-input"
-                      />
-                      <span className="text-sm">Include Hashtags</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={includeEmojis}
-                        onChange={(e) => setIncludeEmojis(e.target.checked)}
-                        className="w-4 h-4 rounded border-input"
-                      />
-                      <span className="text-sm">Include Emojis</span>
-                    </label>
-                  </div>
+                <div className="flex gap-6">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={includeHashtags}
+                      onChange={(e) => setIncludeHashtags(e.target.checked)}
+                      className="w-4 h-4 rounded border-input"
+                    />
+                    <span className="text-sm">Include Hashtags</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={includeEmojis}
+                      onChange={(e) => setIncludeEmojis(e.target.checked)}
+                      className="w-4 h-4 rounded border-input"
+                    />
+                    <span className="text-sm">Include Emojis</span>
+                  </label>
                 </div>
 
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-sm font-semibold">Advanced Options</h4>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setShowAdvancedOptions(!showAdvancedOptions)}
-                    >
-                      {showAdvancedOptions ? "Hide" : "Show"}
-                    </Button>
-                  </div>
-                  {showAdvancedOptions ? (
-                    <div className="space-y-4">
-                      <AdvancedControls
-                        settings={advancedSettings}
-                        onChange={setAdvancedSettings}
-                      />
-                      <PresetSelector
-                        style={style}
-                        includeHashtags={includeHashtags}
-                        includeEmojis={includeEmojis}
-                        advancedSettings={advancedSettings}
-                        onLoadPreset={handleLoadPreset}
-                      />
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      Hidden to keep the flow simple. Use when you need more control.
-                    </p>
-                  )}
-                </div>
+                {/* Advanced Controls */}
+                <AdvancedControls
+                  settings={advancedSettings}
+                  onChange={setAdvancedSettings}
+                />
+
+                {/* Preset Selector */}
+                <PresetSelector
+                  style={style}
+                  includeHashtags={includeHashtags}
+                  includeEmojis={includeEmojis}
+                  advancedSettings={advancedSettings}
+                  onLoadPreset={handleLoadPreset}
+                />
 
                 {/* Generate Button */}
                 <Button
@@ -858,37 +978,27 @@ function App() {
                 </Button>
 
                 {/* Error Message */}
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{statusLine}</span>
-                  {batchMode && <span>{batchCount} variations</span>}
-                </div>
-                {errorMessage && (
+                {(error || streamError) && (
                   <div className="p-4 bg-destructive/10 text-destructive rounded-lg border border-destructive/20">
-                    <p className="font-semibold mb-1">Generation failed</p>
-                    <p className="text-sm">{errorMessage}</p>
-                    {isMissingApiKey && (
-                      <p className="text-xs mt-2 text-destructive/80">
-                        Add a provider key to `.env` and restart the dev server.
-                      </p>
-                    )}
+                    {error || streamError}
                   </div>
                 )}
               </CardContent>
             </Card>
 
             {/* Keyboard Shortcuts Info */}
-            <Card className="bg-muted/40 border-border/50">
+            <Card className="bg-muted/50 border-border/50">
               <CardContent className="pt-6">
                 <h3 className="font-semibold text-sm mb-3">Keyboard Shortcuts</h3>
-                <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
+                <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+Enter</kbd> Generate</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+B</kbd> Batch mode</div>
-                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+S</kbd> Streaming</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Alt+S</kbd> Streaming</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+T</kbd> Templates</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+C</kbd> Copy</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+R</kbd> Regenerate</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+H</kbd> History</div>
-                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+P</kbd> Preview</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Alt+P</kbd> Preview</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+A</kbd> Analytics</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+Shift+H</kbd> Hashtags</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+D</kbd> Schedule</div>
@@ -899,23 +1009,66 @@ function App() {
           </div>
 
           {/* Right Column - Preview & Result */}
-          <div className="space-y-6">
+          <div className="space-y-8">
+            {imageBatchProgress.running && batchTweets.length === 0 && batchResultType === "images" && (
+              <Card className="border-primary/20">
+                <CardContent className="pt-6">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm text-muted-foreground">
+                      Generating: {imageBatchProgress.completed}/{imageBatchProgress.total} images
+                    </div>
+                    <Button variant="destructive" size="sm" onClick={stopImageBatchGeneration}>
+                      Cancel Batch
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
             {/* Batch Results */}
             {batchTweets.length > 0 ? (
-              <BatchResults
-                tweets={batchTweets}
-                onSelect={handleBatchSelect}
-                selectedIndex={selectedBatchIndex}
-                onCopy={handleBatchCopy}
-                onTweet={handleTweet}
-                copiedIndex={copiedBatchIndex}
-              />
+              <div className="space-y-4">
+                {batchResultType === "images" && (
+                  <Card className="border-primary/20">
+                    <CardContent className="pt-6">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="text-sm text-muted-foreground">
+                          {imageBatchProgress.running
+                            ? `Generating: ${imageBatchProgress.completed}/${imageBatchProgress.total} images`
+                            : `Completed: ${batchTweets.length} success, ${imageBatchFailedIndices.length} failed`}
+                        </div>
+                        <div className="flex gap-2">
+                          {imageBatchFailedIndices.length > 0 && !imageBatchProgress.running && (
+                            <Button variant="outline" size="sm" onClick={handleRetryFailedImages} disabled={loading}>
+                              Retry Failed ({imageBatchFailedIndices.length})
+                            </Button>
+                          )}
+                          {imageBatchProgress.running && (
+                            <Button variant="destructive" size="sm" onClick={stopImageBatchGeneration}>
+                              Cancel Batch
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+                <BatchResults
+                  tweets={batchTweets}
+                  onSelect={handleBatchSelect}
+                  selectedIndex={selectedBatchIndex}
+                  onCopy={handleBatchCopy}
+                  onTweet={handleTweet}
+                  copiedIndex={copiedBatchIndex}
+                  itemLabel={batchItemLabel}
+                  labels={batchLabels}
+                />
+              </div>
             ) : (
               <>
                 {/* Tweet Preview */}
                 {showPreview && displayContent && (
                   <div className="space-y-4">
-                    <h3 className="text-base font-semibold">Live Preview</h3>
+                    <h3 className="text-lg font-semibold">Live Preview</h3>
                     <TweetPreview content={displayContent} />
                   </div>
                 )}
@@ -1076,20 +1229,34 @@ function App() {
               </>
             )}
 
-            {/* Provider + Privacy */}
-            <Card className="bg-muted/40 border-border/60">
+            {/* Info Card */}
+            <Card className="bg-gradient-to-br from-primary/5 to-background border-primary/10">
               <CardContent className="pt-6">
-                <div className="space-y-2 text-sm text-muted-foreground">
+                <div className="space-y-4 text-sm text-muted-foreground">
                   <p>
-                    <strong className="text-foreground">Provider:</strong>{" "}
+                    <strong className="text-foreground">Powered by:</strong>{" "}
                     <span className="text-primary font-mono">{currentProvider}</span>
                   </p>
                   <p>
+                    <strong className="text-foreground">Features:</strong>{" "}
+                    {batchMode ? (
+                      <>Batch generation with multiple variations</>
+                    ) : useStreaming ? (
+                      <>Real-time streaming generation, templates, advanced controls</>
+                    ) : (
+                      <>
+                        Live preview, history with favorites, keyboard shortcuts,
+                        batch mode, templates, advanced controls, streaming responses
+                      </>
+                    )}
+                  </p>
+                  <p>
                     <strong className="text-foreground">Privacy:</strong> Your API
-                    key is stored locally and never shared.
+                    keys stay on the server in production deployments.
                   </p>
                   <p className="text-xs">
-                    Requests are sent directly to the provider's servers.
+                    <strong className="text-foreground">Supported providers:</strong>{" "}
+                    GLM, Groq, Hugging Face, OpenAI, DeepSeek, Together AI, Gemini
                   </p>
                 </div>
               </CardContent>
@@ -1118,7 +1285,7 @@ function App() {
             </a>{" "}
             •{" "}
             <a
-              href="https://github.com/yourusername/ai-tweet-generator"
+              href="https://github.com/ElijahNatanielDeLosSantos/ai-tweet-generator"
               target="_blank"
               rel="noopener noreferrer"
               className="text-primary hover:underline"

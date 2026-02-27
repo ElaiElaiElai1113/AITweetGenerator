@@ -13,15 +13,11 @@ interface TemplateSelectorProps {
 }
 
 export function TemplateSelector({ selectedTemplate, onSelect }: TemplateSelectorProps) {
-  const [customTemplates, setCustomTemplates] = useState<Template[]>([]);
+  const [customTemplates, setCustomTemplates] = useState<Template[]>(() => loadCustomTemplates());
   const [showCreate, setShowCreate] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [draftDescription, setDraftDescription] = useState("");
   const [draftPrompt, setDraftPrompt] = useState("");
-
-  useEffect(() => {
-    setCustomTemplates(loadCustomTemplates());
-  }, []);
 
   useEffect(() => {
     saveCustomTemplates(customTemplates);

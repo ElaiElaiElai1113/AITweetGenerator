@@ -45,13 +45,6 @@ interface VisionAnalysisRequest {
   };
 }
 
-interface VisionAnalysisResponse {
-  description: string;
-  tweet: string;
-  location?: string;
-  error?: string;
-}
-
 const VISION_CONFIGS = {
   openai: {
     url: 'https://api.openai.com/v1/chat/completions',

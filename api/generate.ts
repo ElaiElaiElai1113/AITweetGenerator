@@ -257,26 +257,7 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
     // Use custom temperature if provided, otherwise default
     const temperature = advancedSettings?.temperature ?? 0.7;
 
-    let response: Response;
-    const isGemini = provider === 'gemini';
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-
-    const envKey = config.envKey;
-    const apiKeyValue = process.env[envKey]!;
-
-    if (isGemini) {
-      headers['x-goog-api-key'] = apiKeyValue;
-    } else if (provider === 'glm') {
-      const token = await generateGLMToken(apiKeyValue);
-      headers['Authorization'] = `Bearer ${token}`;
-    } else {
-      headers['Authorization'] = `Bearer ${apiKeyValue}`;
-    }
-
-    response = await fetch(
+    const response: Response = await fetch(
       isGemini ? `${config.url}/${config.model}:generateContent` : config.url,
       {
         method: 'POST',
@@ -317,6 +298,23 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
         ),
       }
     );
+    const isGemini = provider === 'gemini';
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    const envKey = config.envKey;
+    const apiKeyValue = process.env[envKey]!;
+
+    if (isGemini) {
+      headers['x-goog-api-key'] = apiKeyValue;
+    } else if (provider === 'glm') {
+      const token = await generateGLMToken(apiKeyValue);
+      headers['Authorization'] = `Bearer ${token}`;
+    } else {
+      headers['Authorization'] = `Bearer ${apiKeyValue}`;
+    }
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));

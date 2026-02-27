@@ -44,7 +44,7 @@ Generate viral tweets in seconds using AI. Powered by LLaMA 3 and Groq.
 
    Edit `.env` and add your Groq API key:
    ```bash
-   VITE_GROQ_API_KEY=your_groq_api_key_here
+   GROQ_API_KEY=your_groq_api_key_here
    ```
 
 4. **Run the development server**
@@ -90,7 +90,7 @@ The built files will be in the `dist` directory.
 
 3. **Add Environment Variable**
    - In Vercel dashboard, go to Project Settings → Environment Variables
-   - Add: `VITE_GROQ_API_KEY` with your Groq API key
+   - Add: `GROQ_API_KEY` with your Groq API key
 
 ### Deploy to Netlify
 
@@ -102,7 +102,7 @@ The built files will be in the `dist` directory.
 2. **Deploy the `dist` folder** via Netlify's dashboard or CLI
 
 3. **Add Environment Variable** in Netlify dashboard:
-   - Key: `VITE_GROQ_API_KEY`
+   - Key: `GROQ_API_KEY`
    - Value: Your Groq API key
 
 ## 🔧 Configuration
@@ -111,7 +111,8 @@ The built files will be in the `dist` directory.
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `VITE_GROQ_API_KEY` | Your Groq API key | Yes |
+| `GROQ_API_KEY` | Your Groq API key (server-side) | Yes |
+| `VITE_GROQ_API_KEY` | Local dev fallback key | No |
 
 ### Getting a Free Groq API Key
 

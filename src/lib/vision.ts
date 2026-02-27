@@ -12,6 +12,7 @@ export interface VisionAnalysisRequest {
   customContext?: string;
   advancedSettings?: AdvancedSettings;
   isVideo?: boolean; // Flag to indicate this is from a video
+  signal?: AbortSignal;
 }
 
 export interface VisionAnalysisResponse {
@@ -128,7 +129,7 @@ function extractTweetFromReasoning(reasoning: string): string {
   }
 
   // Extract the potential tweet
-  let potentialTweet = reasoning.substring(startPos, stopPos).trim();
+  const potentialTweet = reasoning.substring(startPos, stopPos).trim();
 
   // Look for the actual tweet within the extracted text
   // The tweet often starts after a colon or quote and ends before the next reasoning
@@ -138,7 +139,7 @@ function extractTweetFromReasoning(reasoning: string): string {
   }
 
   // Try to find text that looks like a tweet (emojis + hashtags)
-  const tweetWithEmojiMatch = potentialTweet.match(/([A-Z][^.\n]{20,280}[🐠✨🌊💕💙🎉🔥⭐][^.\n]{0,50}#[A-Za-z]+)/);
+  const tweetWithEmojiMatch = potentialTweet.match(/([A-Z][^.\n]{20,280}[🐠✨🌊💕💙🎉🔥⭐][^.\n]{0,50}#[A-Za-z]+)/u);
   if (tweetWithEmojiMatch && tweetWithEmojiMatch[1]) {
     return tweetWithEmojiMatch[1].trim();
   }
@@ -148,7 +149,7 @@ function extractTweetFromReasoning(reasoning: string): string {
   if (sentences.length > 0) {
     // Try to find a sentence with hashtags or emojis
     for (const sentence of sentences) {
-      if (sentence.includes('#') || /[🐠✨🌊💕💙]/.test(sentence)) {
+      if (sentence.includes('#') || /[🐠✨🌊💕💙]/u.test(sentence)) {
         return sentence.trim();
       }
     }
@@ -251,7 +252,7 @@ Get a free Gemini key: https://aistudio.google.com/app/apikey`,
     };
   }
 
-  const { imageBase64, style, includeHashtags, includeEmojis, customContext, images, isVideo } = request;
+  const { imageBase64, style, includeHashtags, includeEmojis, customContext, images, isVideo, signal } = request;
   const hasMultipleFrames = images && images.length > 0;
   const imagesToAnalyze = hasMultipleFrames ? images! : [imageBase64];
 
@@ -296,6 +297,7 @@ Return only JSON matching this schema:
 
   try {
     let response: Response;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let data: any;
 
     if (provider === "gemini") {
@@ -347,6 +349,7 @@ Return only JSON matching this schema:
           }),
           maxRetries: 3,
           initialDelay: 1000,
+          signal,
         }
       );
 
@@ -419,6 +422,7 @@ Return only JSON matching this schema:
         }),
         maxRetries: 3,
         initialDelay: 1000,
+        signal,
       });
 
       if (!response.ok) {
@@ -535,6 +539,7 @@ Return only JSON matching this schema:
         }),
         maxRetries: 3,
         initialDelay: 1000,
+        signal,
       });
 
       if (!response.ok) {
@@ -640,7 +645,7 @@ export async function extractVideoFrame(file: File, time: number = 1): Promise<s
     video.addEventListener("loadedmetadata", () => {
       try {
         video.currentTime = Math.min(time, video.duration - 0.1);
-      } catch (e) {
+      } catch {
         cleanup();
         reject(new Error("Failed to seek video"));
       }
@@ -742,7 +747,7 @@ export async function extractMultipleVideoFrames(file: File, frameCount?: number
         const duration = video.duration || 1;
         const timestamp = (duration / (targetFrameCount + 1)) * (currentFrameIndex + 1);
         video.currentTime = Math.min(timestamp, duration - 0.1);
-      } catch (e) {
+      } catch {
         cleanup();
         reject(new Error("Failed to seek video"));
       }
