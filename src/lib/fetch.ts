@@ -16,14 +16,20 @@ export async function fetchWithRetry(
     maxRetries = 3,
     initialDelay = 1000,
     onRetry,
+    signal,
     ...fetchOptions
   } = options;
+  const normalizedSignal = signal ?? undefined;
 
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (normalizedSignal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
+
     try {
-      const response = await fetch(url, fetchOptions);
+      const response = await fetch(url, { ...fetchOptions, signal: normalizedSignal });
 
       // Don't retry on client errors (except 429 Too Many Requests)
       if (response.ok || (response.status >= 400 && response.status < 500 && response.status !== 429)) {
@@ -49,7 +55,7 @@ export async function fetchWithRetry(
       }
 
       onRetry?.(attempt + 1, lastError);
-      await sleep(retryDelay);
+      await sleep(retryDelay, normalizedSignal);
 
     } catch (error) {
       // Network errors or other exceptions
@@ -62,13 +68,34 @@ export async function fetchWithRetry(
 
       const retryDelay = initialDelay * Math.pow(2, attempt);
       onRetry?.(attempt + 1, lastError);
-      await sleep(retryDelay);
+      await sleep(retryDelay, normalizedSignal);
     }
   }
 
   throw lastError || new Error("Max retries exceeded");
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    };
+
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      clearTimeout(timeout);
+      cleanup();
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+    };
+
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
 }

@@ -226,14 +226,14 @@ export function ShortcutTooltip({
   label,
 }: {
   shortcut: string;
-  children: React.ReactElement;
+  children: React.ReactElement<{ "aria-label"?: string }>;
   label?: string;
 }) {
   return (
     <Tooltip
       content={
         <div className="flex items-center gap-2">
-          <span>{label || (children.props as any)['aria-label'] || 'Shortcut'}</span>
+          <span>{label || children.props["aria-label"] || "Shortcut"}</span>
           <kbd className="px-1.5 py-0.5 text-[10px] bg-muted border rounded font-mono">
             {shortcut}
           </kbd>

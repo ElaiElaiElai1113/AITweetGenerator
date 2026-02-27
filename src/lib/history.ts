@@ -83,12 +83,16 @@ export function exportHistory(): void {
 }
 
 // Import history from JSON file
-export function importHistory(file: File): void {
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    try {
-      const imported = JSON.parse(e.target?.result as string);
-      if (Array.isArray(imported)) {
+export function importHistory(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const imported = JSON.parse(e.target?.result as string);
+        if (!Array.isArray(imported)) {
+          reject(new Error("Invalid history format"));
+          return;
+        }
         const currentHistory = getHistory();
         // Merge without duplicates (by ID)
         const existingIds = new Set(currentHistory.map((t) => t.id));
@@ -98,11 +102,12 @@ export function importHistory(file: File): void {
         // Update favorites
         const favorites = merged.filter((t) => t.favorite);
         localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
-        alert(`Successfully imported ${newTweets.length} tweets.`);
+        resolve(newTweets.length);
+      } catch {
+        reject(new Error("Failed to import history"));
       }
-    } catch {
-      alert("Failed to import history. Please check the file format.");
-    }
-  };
-  reader.readAsText(file);
+    };
+    reader.onerror = () => reject(new Error("Failed to read history file"));
+    reader.readAsText(file);
+  });
 }

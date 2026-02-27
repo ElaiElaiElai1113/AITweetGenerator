@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { Input } from "./ui/input";
@@ -7,7 +7,6 @@ import {
   getScheduledTweets,
   scheduleTweet,
   deleteScheduledTweet,
-  updateScheduledTweet,
   type ScheduledTweet,
 } from "@/lib/scheduler";
 import { Trash2, Calendar, Clock, X } from "lucide-react";
@@ -27,36 +26,9 @@ export function SchedulerPanel({
   style,
   topic,
 }: SchedulerPanelProps) {
-  const [scheduledTweets, setScheduledTweets] = useState<ScheduledTweet[]>([]);
+  const [scheduledTweets, setScheduledTweets] = useState<ScheduledTweet[]>(() => getScheduledTweets());
   const [selectedDate, setSelectedDate] = useState("");
   const [selectedTime, setSelectedTime] = useState("");
-
-  useEffect(() => {
-    if (isOpen) {
-      loadScheduledTweets();
-      // Check for due tweets every 30 seconds
-      const interval = setInterval(checkDueTweets, 30000);
-      return () => clearInterval(interval);
-    }
-  }, [isOpen]);
-
-  const loadScheduledTweets = () => {
-    setScheduledTweets(getScheduledTweets());
-  };
-
-  const checkDueTweets = () => {
-    // This would normally post the tweets to Twitter
-    // For now, we'll mark them as "failed" with a note
-    const due = getScheduledTweets().filter((t) => t.status === "pending");
-    due.forEach((tweet) => {
-      if (new Date(tweet.scheduledFor) <= new Date()) {
-        updateScheduledTweet(tweet.id, {
-          status: "failed",
-        });
-        loadScheduledTweets();
-      }
-    });
-  };
 
   const handleSchedule = () => {
     if (!tweetContent.trim()) {
@@ -82,7 +54,7 @@ export function SchedulerPanel({
       status: "pending",
     });
 
-    loadScheduledTweets();
+    setScheduledTweets(getScheduledTweets());
     setSelectedDate("");
     setSelectedTime("");
     onClose();
@@ -91,7 +63,7 @@ export function SchedulerPanel({
   const handleDelete = (id: string) => {
     if (confirm("Delete this scheduled tweet?")) {
       deleteScheduledTweet(id);
-      loadScheduledTweets();
+      setScheduledTweets(getScheduledTweets());
     }
   };
 
@@ -107,13 +79,19 @@ export function SchedulerPanel({
   const getTimeUntil = (date: Date) => {
     const now = new Date();
     const diffMs = date.getTime() - now.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
+    const isOverdue = diffMs < 0;
+    const absDiffMs = Math.abs(diffMs);
+    const diffMins = Math.floor(absDiffMs / 60000);
+    const diffHours = Math.floor(absDiffMs / 3600000);
+    const diffDays = Math.floor(absDiffMs / 86400000);
 
-    if (diffMins < 60) return `${diffMins} minutes`;
-    if (diffHours < 24) return `${diffHours} hours`;
-    return `${diffDays} days`;
+    const duration = diffMins < 60
+      ? `${diffMins} minutes`
+      : diffHours < 24
+      ? `${diffHours} hours`
+      : `${diffDays} days`;
+
+    return isOverdue ? `${duration} ago` : `in ${duration}`;
   };
 
   if (!isOpen) return null;
@@ -181,7 +159,7 @@ export function SchedulerPanel({
               <Calendar className="w-12 h-12 mb-4 opacity-50" />
               <p className="text-lg font-medium">No scheduled tweets</p>
               <p className="text-sm">
-                Schedule tweets to post them automatically
+                Schedule tweets to keep a posting plan
               </p>
             </div>
           ) : (
@@ -223,7 +201,7 @@ export function SchedulerPanel({
                       </p>
                       <div className="text-xs text-muted-foreground flex gap-4">
                         <span>Due: {formatDate(tweet.scheduledFor)}</span>
-                        <span>({getTimeUntil(tweet.scheduledFor)} from now)</span>
+                        <span>({getTimeUntil(tweet.scheduledFor)})</span>
                       </div>
                     </div>
                     <Button

@@ -30,7 +30,7 @@ import { type Template } from "./lib/templates";
 import { SchedulerPanel } from "./components/SchedulerPanel";
 import { HashtagSuggestions } from "./components/HashtagSuggestions";
 import { AnalyticsDashboard } from "./components/AnalyticsDashboard";
-import { trackTweetGeneration } from "./lib/analytics";
+import { trackTweetGeneration, trackFavorite } from "./lib/analytics";
 import {
   Copy,
   RefreshCw,
@@ -52,7 +52,7 @@ import {
   Hash,
   BarChart3,
 } from "lucide-react";
-import { useTheme } from "./components/theme-provider";
+import { useTheme } from "./components/theme-context";
 
 function App() {
   const { theme, setTheme } = useTheme();
@@ -146,8 +146,7 @@ function App() {
     },
     {
       key: "s",
-      ctrlKey: true,
-      metaKey: true,
+      altKey: true,
       action: () => setUseStreaming(!useStreaming),
       description: "Toggle Streaming",
     },
@@ -189,8 +188,7 @@ function App() {
     },
     {
       key: "p",
-      ctrlKey: true,
-      metaKey: true,
+      altKey: true,
       action: () => setShowPreview(!showPreview),
       description: "Toggle Preview",
     },
@@ -277,6 +275,9 @@ function App() {
     try {
       // Vision-based generation when media is uploaded
       if (uploadedMedia && uploadedMedia.base64) {
+        const mediaLabel = uploadedMedia.files.length === 1
+          ? uploadedMedia.files[0].name
+          : `${uploadedMedia.files.length} images`;
         visionLogger.debug("Starting vision analysis...");
         const response = await analyzeImageAndGenerateTweet({
           imageBase64: uploadedMedia.base64,
@@ -298,12 +299,12 @@ function App() {
           visionLogger.debug("Vision tweet generated:", response.tweet?.substring(0, 50) + "...");
           setGeneratedTweet(response.tweet);
           // Track analytics
-          trackTweetGeneration(style, selectedTemplate?.name, uploadedMedia.file.name);
+          trackTweetGeneration(style, selectedTemplate?.name, mediaLabel);
           // Save to history
           const newTweet: SavedTweet = {
             id: Date.now().toString(),
             content: response.tweet,
-            topic: uploadedMedia.file.name,
+            topic: mediaLabel,
             style,
             timestamp: Date.now(),
             favorite: false,
@@ -370,7 +371,7 @@ function App() {
         }
         setLoading(false);
       }
-    } catch (err) {
+    } catch {
       setError("Failed to generate tweet. Please try again.");
       setLoading(false);
     }
@@ -402,7 +403,11 @@ function App() {
 
   const handleFavorite = () => {
     if (currentTweetId) {
-      toggleFavorite(currentTweetId);
+      const updated = toggleFavorite(currentTweetId);
+      const toggledTweet = updated.find((tweet) => tweet.id === currentTweetId);
+      if (toggledTweet) {
+        trackFavorite(toggledTweet.favorite);
+      }
     }
   };
 
@@ -498,7 +503,7 @@ function App() {
               variant={useStreaming ? "default" : "ghost"}
               size="icon"
               onClick={() => setUseStreaming(!useStreaming)}
-              title="Toggle Streaming (Ctrl+S)"
+              title="Toggle Streaming (Alt+S)"
             >
               <Zap className="h-4 w-4" />
             </Button>
@@ -530,7 +535,7 @@ function App() {
               variant="ghost"
               size="icon"
               onClick={() => setShowPreview(!showPreview)}
-              title="Toggle Preview (Ctrl+P)"
+              title="Toggle Preview (Alt+P)"
             >
               {showPreview ? <Eye className="h-5 w-5" /> : <EyeOff className="h-5 w-5" />}
             </Button>
@@ -538,7 +543,7 @@ function App() {
               variant={showHashtags ? "default" : "ghost"}
               size="icon"
               onClick={() => setShowHashtags(!showHashtags)}
-              title="Hashtag Suggestions (Alt+H)"
+              title="Hashtag Suggestions (Ctrl+Shift+H)"
             >
               <Hash className="h-5 w-5" />
             </Button>
@@ -579,7 +584,7 @@ function App() {
             <div className="text-center space-y-4">
               <h2 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-primary via-purple-500 to-pink-500 bg-clip-text text-transparent">
                 {uploadedMedia ? (
-                  <>Generate Tweet from {uploadedMedia.type === "video" ? "Video" : "Image"}</>
+                  <>Generate Tweet from {uploadedMedia.type === "video" ? "Video" : uploadedMedia.files.length > 1 ? "Images" : "Image"}</>
                 ) : selectedTemplate ? (
                   <>Create {selectedTemplate.name} Tweets</>
                 ) : batchMode ? (
@@ -639,7 +644,11 @@ function App() {
                 <CardTitle>Generate Your Tweet{batchMode ? "s" : ""}</CardTitle>
                 <CardDescription>
                   {uploadedMedia
-                    ? "AI will analyze your image/video and generate a tweet"
+                    ? uploadedMedia.type === "video"
+                      ? "AI will analyze your video and generate a tweet"
+                      : uploadedMedia.files.length > 1
+                      ? `AI will analyze ${uploadedMedia.files.length} images and generate a tweet`
+                      : "AI will analyze your image and generate a tweet"
                     : selectedTemplate
                     ? `Using template: ${selectedTemplate.name}`
                     : "Enter a topic and customize your tweet style"}
@@ -673,7 +682,7 @@ function App() {
                   <Select
                     id="style"
                     value={style}
-                    onChange={(e) => setStyle(e.target.value as any)}
+                    onChange={(e) => setStyle(e.target.value as "viral" | "professional" | "casual" | "thread")}
                   >
                     <option value="viral">🚀 Viral & Engaging</option>
                     <option value="professional">💼 Professional</option>
@@ -772,12 +781,12 @@ function App() {
                 <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+Enter</kbd> Generate</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+B</kbd> Batch mode</div>
-                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+S</kbd> Streaming</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Alt+S</kbd> Streaming</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+T</kbd> Templates</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+C</kbd> Copy</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+R</kbd> Regenerate</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+H</kbd> History</div>
-                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+P</kbd> Preview</div>
+                  <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Alt+P</kbd> Preview</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+A</kbd> Analytics</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+Shift+H</kbd> Hashtags</div>
                   <div><kbd className="px-1.5 py-0.5 bg-background border rounded">Ctrl+D</kbd> Schedule</div>
@@ -988,12 +997,11 @@ function App() {
                   </p>
                   <p>
                     <strong className="text-foreground">Privacy:</strong> Your API
-                    key is stored locally and never shared. All requests go directly
-                    to the AI provider's servers.
+                    keys stay on the server in production deployments.
                   </p>
                   <p className="text-xs">
                     <strong className="text-foreground">Supported providers:</strong>{" "}
-                    Groq, Hugging Face, OpenAI, DeepSeek, Together AI
+                    GLM, Groq, Hugging Face, OpenAI, DeepSeek, Together AI, Gemini
                   </p>
                 </div>
               </CardContent>
@@ -1022,7 +1030,7 @@ function App() {
             </a>{" "}
             •{" "}
             <a
-              href="https://github.com/yourusername/ai-tweet-generator"
+              href="https://github.com/ElijahNatanielDeLosSantos/ai-tweet-generator"
               target="_blank"
               rel="noopener noreferrer"
               className="text-primary hover:underline"

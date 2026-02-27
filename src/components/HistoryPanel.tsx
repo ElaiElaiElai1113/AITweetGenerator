@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { Input } from "./ui/input";
@@ -9,8 +9,8 @@ import {
   clearHistory,
   exportHistory,
   importHistory,
-  type SavedTweet,
 } from "@/lib/history";
+import { trackFavorite } from "@/lib/analytics";
 import { Trash2, Star, StarOff, X, History as HistoryIcon, Search, Download, Upload } from "lucide-react";
 
 interface HistoryPanelProps {
@@ -24,16 +24,23 @@ export function HistoryPanel({
   isOpen,
   onClose,
 }: HistoryPanelProps) {
-  const [history, setHistory] = useState<SavedTweet[]>([]);
+  const [historyVersion, setHistoryVersion] = useState(0);
   const [filter, setFilter] = useState<"all" | "favorites">("all");
   const [styleFilter, setStyleFilter] = useState<"all" | "viral" | "professional" | "casual" | "thread">("all");
   const [searchQuery, setSearchQuery] = useState("");
 
-  useEffect(() => {
-    if (isOpen) {
-      loadHistory();
-    }
-  }, [isOpen, filter, styleFilter]);
+  const allHistory = useMemo(
+    () => {
+      void historyVersion;
+      return isOpen ? getHistory() : [];
+    },
+    [isOpen, historyVersion],
+  );
+
+  const history = useMemo(
+    () => (filter === "favorites" ? allHistory.filter((t) => t.favorite) : allHistory),
+    [allHistory, filter],
+  );
 
   const filteredHistory = useMemo(() => {
     let result = history;
@@ -55,33 +62,24 @@ export function HistoryPanel({
     return result;
   }, [history, styleFilter, searchQuery]);
 
-  const loadHistory = () => {
-    const allHistory = getHistory();
-    const filtered =
-      filter === "favorites"
-        ? allHistory.filter((t) => t.favorite)
-        : allHistory;
-    setHistory(filtered);
-  };
-
   const handleDelete = (id: string) => {
-    const updated = deleteFromHistory(id);
-    const filtered =
-      filter === "favorites" ? updated.filter((t) => t.favorite) : updated;
-    setHistory(filtered);
+    deleteFromHistory(id);
+    setHistoryVersion((value) => value + 1);
   };
 
   const handleToggleFavorite = (id: string) => {
     const updated = toggleFavorite(id);
-    const filtered =
-      filter === "favorites" ? updated.filter((t) => t.favorite) : updated;
-    setHistory(filtered);
+    const toggledTweet = updated.find((tweet) => tweet.id === id);
+    if (toggledTweet) {
+      trackFavorite(toggledTweet.favorite);
+    }
+    setHistoryVersion((value) => value + 1);
   };
 
   const handleClearAll = () => {
     if (confirm("Are you sure you want to clear all history?")) {
       clearHistory();
-      setHistory([]);
+      setHistoryVersion((value) => value + 1);
     }
   };
 
@@ -96,8 +94,14 @@ export function HistoryPanel({
     input.onchange = (e) => {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (file) {
-        importHistory(file);
-        loadHistory();
+        importHistory(file)
+          .then((count) => {
+            alert(`Successfully imported ${count} tweets.`);
+            setHistoryVersion((value) => value + 1);
+          })
+          .catch(() => {
+            alert("Failed to import history. Please check the file format.");
+          });
       }
     };
     input.click();

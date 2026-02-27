@@ -15,6 +15,10 @@ import { streamLogger } from "./logger";
 import { getMoodPrompt, type TweetMood } from "./mood";
 import { getAudiencePrompt, type AudienceType } from "./audience";
 
+const USE_SERVER_API =
+  import.meta.env.VITE_FORCE_CLIENT_API !== "true" &&
+  (!import.meta.env.DEV || import.meta.env.VITE_FORCE_SERVER_API === "true");
+
 // Helper function to generate JWT token for Zhipu AI (GLM)
 async function generateGLMToken(apiKey: string): Promise<string> {
   const [id, secret] = apiKey.split(".");
@@ -69,7 +73,7 @@ const API_CONFIGS = {
     useProxy: false,
   },
   huggingface: {
-    url: "/api/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions",
+    url: "/hf-api/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions",
     model: "mistralai/Mistral-7B-Instruct-v0.3",
     envKey: "VITE_HUGGINGFACE_API_KEY",
     useProxy: true,
@@ -127,6 +131,11 @@ export interface TweetGenerationResponse {
 
 export interface BatchTweetResponse {
   tweets: string[];
+  error?: string;
+}
+
+interface ServerGenerateResponse {
+  tweet: string;
   error?: string;
 }
 
@@ -213,6 +222,28 @@ Personal example thread:
 export async function generateTweet(
   request: TweetGenerationRequest,
 ): Promise<TweetGenerationResponse> {
+  if (USE_SERVER_API) {
+    try {
+      const response = await fetchWithRetry("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+        maxRetries: 2,
+        initialDelay: 500,
+      });
+      const data = (await response.json()) as ServerGenerateResponse;
+      if (!response.ok || data.error) {
+        return { tweet: "", error: data.error || "Failed to generate tweet" };
+      }
+      return { tweet: data.tweet || "" };
+    } catch (error) {
+      return {
+        tweet: "",
+        error: error instanceof Error ? error.message : "Failed to generate tweet. Please try again.",
+      };
+    }
+  }
+
   const provider = detectProvider();
   const config = API_CONFIGS[provider];
 
@@ -402,6 +433,9 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
 
 // Helper function to check which provider is being used
 export function getCurrentProvider(): string {
+  if (USE_SERVER_API) {
+    return "Server API (secured keys)";
+  }
   const provider = detectProvider();
   const config = API_CONFIGS[provider];
   return `${provider} (${config.model})`;
@@ -412,6 +446,19 @@ export async function generateBatchTweets(
   request: TweetGenerationRequest,
   count: number = 3
 ): Promise<BatchTweetResponse> {
+  if (USE_SERVER_API) {
+    const responses = await Promise.all(
+      Array.from({ length: count }, () => generateTweet(request)),
+    );
+    const error = responses.find((r) => r.error)?.error;
+    if (error) {
+      return { tweets: [], error };
+    }
+    return {
+      tweets: responses.map((r) => r.tweet).filter((t): t is string => Boolean(t)),
+    };
+  }
+
   const provider = detectProvider();
   const config = API_CONFIGS[provider];
 
@@ -556,8 +603,24 @@ Output format: Return each tweet on a separate line, separated by "---". No numb
 
 // Generate tweet with real streaming (SSE) support
 export async function* generateTweetStream(
-  request: TweetGenerationRequest
+  request: TweetGenerationRequest,
+  options?: { signal?: AbortSignal }
 ): AsyncGenerator<string, void, unknown> {
+  if (USE_SERVER_API) {
+    if (options?.signal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
+    const response = await generateTweet(request);
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    if (options?.signal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
+    yield response.tweet;
+    return;
+  }
+
   const provider = detectProvider();
   const config = API_CONFIGS[provider];
 
@@ -688,6 +751,7 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
           }),
           maxRetries: 3,
           initialDelay: 1000,
+          signal: options?.signal,
         }
       );
 
@@ -714,6 +778,10 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
 
       while (true) {
         const { done, value } = await reader.read();
+        if (options?.signal?.aborted) {
+          await reader.cancel();
+          throw new DOMException("The operation was aborted.", "AbortError");
+        }
         if (done) {
           streamLogger.debug(`Complete. Total chunks: ${chunksReceived}`);
           break;
@@ -739,7 +807,7 @@ Output ONLY the tweet text, no explanations or extra commentary.`;
                 streamLogger.debug(`Chunk ${chunksReceived}:`, content.substring(0, 30) + "...");
                 yield content;
               }
-            } catch (e) {
+            } catch {
               streamLogger.debug("Failed to parse line:", data.substring(0, 100));
             }
           }

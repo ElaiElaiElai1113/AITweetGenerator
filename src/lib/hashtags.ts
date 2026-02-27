@@ -18,7 +18,7 @@ export const HASHTAG_CATEGORIES = {
   social: [
     "#community", "#connection", "#viral", "#trending", "#lifestyle",
     "#inspiration", "#positivity", "#goodvibes", "#wellness", "#mentalhealth",
-    "#SelfCare", "#LifeHacks", "#DailyReminder", "# motivation",
+    "#SelfCare", "#LifeHacks", "#DailyReminder", "#motivation",
   ],
   creative: [
     "#design", "#art", "#creative", "#illustration", "#photography",

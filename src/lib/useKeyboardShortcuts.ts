@@ -5,6 +5,7 @@ interface ShortcutConfig {
   ctrlKey?: boolean;
   metaKey?: boolean;
   shiftKey?: boolean;
+  altKey?: boolean;
   action: () => void;
   description: string;
 }
@@ -45,8 +46,9 @@ export function useKeyboardShortcuts(shortcuts: ShortcutConfig[]) {
         const ctrlMatch = !!shortcut.ctrlKey === (event.ctrlKey || event.metaKey);
         const metaMatch = !!shortcut.metaKey === (event.metaKey || event.ctrlKey);
         const shiftMatch = !!shortcut.shiftKey === event.shiftKey;
+        const altMatch = !!shortcut.altKey === event.altKey;
 
-        if (keyMatch && ctrlMatch && metaMatch && shiftMatch) {
+        if (keyMatch && ctrlMatch && metaMatch && shiftMatch && altMatch) {
           event.preventDefault();
           shortcut.action();
           break;
